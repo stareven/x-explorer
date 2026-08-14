@@ -190,27 +190,42 @@ fn mount_ios_container(device_id: &str, bundle_id: &str) -> Result<String, Strin
     let mut guard = MOUNTS.lock().unwrap();
     let map = guard.get_or_insert_with(HashMap::new);
 
+    // Re-check: another thread may have mounted while we were checking trust.
+    if let Some(existing) = map.get(&key) {
+        return Ok(existing.clone());
+    }
+
     let mount_path = std::env::temp_dir()
         .join("x-explorer")
         .join(device_id)
         .join(bundle_id);
     std::fs::create_dir_all(&mount_path).map_err(|e| e.to_string())?;
+    let mount_path_str = mount_path
+        .to_str()
+        .ok_or_else(|| "挂载路径包含无效字符".to_string())?;
     let ifuse = crate::bin_path::resolve("ifuse")?;
+    let args = ifuse_args(device_id, bundle_id, mount_path_str);
     let status = std::process::Command::new(ifuse)
-        .args([
-            "--udid", device_id,
-            "--container", bundle_id,
-            mount_path.to_str().unwrap(),
-        ])
+        .args(&args)
         .status()
         .map_err(|e| e.to_string())?;
     if !status.success() {
-        return Err(format!("ifuse mount failed for {}", bundle_id));
+        let _ = std::fs::remove_dir_all(&mount_path);
+        return Err(format!("挂载应用容器失败: {}", bundle_id));
     }
 
     let path_str = mount_path.to_string_lossy().to_string();
     map.insert(key, path_str.clone());
     Ok(path_str)
+}
+
+/// Builds the ifuse argv for mounting a container: --udid, --container, and the mount path.
+fn ifuse_args(device_id: &str, bundle_id: &str, mount_path: &str) -> Vec<String> {
+    vec![
+        "--udid".to_string(), device_id.to_string(),
+        "--container".to_string(), bundle_id.to_string(),
+        mount_path.to_string(),
+    ]
 }
 
 #[cfg(test)]
@@ -255,5 +270,20 @@ mod tests {
         assert!(is_untrusted_error("ERROR: Could not connect to lockdownd, error code -18 (Trust)"));
         assert!(is_untrusted_error("PairingDialogResponsePending"));
         assert!(!is_untrusted_error(""));
+    }
+
+    #[test]
+    fn test_ifuse_args_builds_expected_argv() {
+        let args = ifuse_args("udid123", "com.example.app", "/tmp/x-explorer/udid123/com.example.app");
+        assert_eq!(
+            args,
+            vec![
+                "--udid".to_string(),
+                "udid123".to_string(),
+                "--container".to_string(),
+                "com.example.app".to_string(),
+                "/tmp/x-explorer/udid123/com.example.app".to_string(),
+            ]
+        );
     }
 }
