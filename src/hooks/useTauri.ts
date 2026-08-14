@@ -30,9 +30,6 @@ export const tauriApi = {
     invoke<void>("ios_delete", { device_id: deviceId, bundle_id: bundleId, remote_path: remotePath }),
   androidDelete: (deviceId: string, remotePath: string, pkg?: string) =>
     invoke<void>("android_delete", { device_id: deviceId, remote_path: remotePath, package: pkg ?? null }),
-  iosUnmountContainer: (deviceId: string, bundleId: string) =>
-    invoke<void>("ios_unmount_container", { device_id: deviceId, bundle_id: bundleId }),
-
   // Enqueue-based transfer commands — return the new task's id immediately;
   // actual progress arrives via the "transfer-progress" event (see
   // useTransferListener below).
@@ -67,26 +64,16 @@ export const tauriApi = {
   cancelTransfer: (taskId: string) => invoke<boolean>("cancel_transfer", { task_id: taskId }),
 };
 
-// Hook: listen for device hotplug events, update store, and unmount any iOS
-// container belonging to a device that just disappeared from the list (e.g.
-// unplugged mid-browse). Without this, ifuse mounts under
-// $TMPDIR/x-explorer/<device_id>/ leak until the app restarts.
+// Hook: listen for device hotplug events and update the store's device list.
+// If the currently selected device disappears (unplugged), clear the
+// selection so FileBrowser doesn't keep showing a stale device's files.
 export function useDeviceListener() {
   const setDevices = useStore((s) => s.setDevices);
   useEffect(() => {
     const unlisten = listen<Device[]>("devices-changed", (event) => {
       const nextDevices = event.payload;
-      const { devices: prevDevices, selectedDeviceId, browseTarget, setSelectedDeviceId } =
-        useStore.getState();
+      const { selectedDeviceId, setSelectedDeviceId } = useStore.getState();
       const stillPresent = new Set(nextDevices.map((d) => d.id));
-      const disconnectedIos = prevDevices.filter(
-        (d) => d.platform === "ios" && !stillPresent.has(d.id)
-      );
-      for (const d of disconnectedIos) {
-        if (browseTarget?.kind === "app") {
-          tauriApi.iosUnmountContainer(d.id, browseTarget.app.bundle_id).catch(() => {});
-        }
-      }
       if (selectedDeviceId && !stillPresent.has(selectedDeviceId)) {
         setSelectedDeviceId(null);
       }

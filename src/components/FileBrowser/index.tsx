@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useStore } from "../../store";
 import { tauriApi, useTransferListener } from "../../hooks/useTauri";
@@ -54,22 +54,6 @@ export function FileBrowser() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, browseTarget, currentPath]);
-
-  const prevIosTarget = useRef<{ deviceId: string; bundleId: string } | null>(null);
-  useEffect(() => {
-    const prev = prevIosTarget.current;
-    if (
-      prev &&
-      !(device?.platform === "ios" && browseTarget?.kind === "app" &&
-        device.id === prev.deviceId && browseTarget.app.bundle_id === prev.bundleId)
-    ) {
-      tauriApi.iosUnmountContainer(prev.deviceId, prev.bundleId).catch(() => {});
-    }
-    prevIosTarget.current =
-      device?.platform === "ios" && browseTarget?.kind === "app"
-        ? { deviceId: device.id, bundleId: browseTarget.app.bundle_id }
-        : null;
-  }, [device, browseTarget]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
