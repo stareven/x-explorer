@@ -39,12 +39,14 @@ export function Toolbar({ selectedCount, onImport, onExport, onDelete }: Toolbar
         <button
           onClick={() => setViewMode("list")}
           className={`px-2 py-1 text-xs rounded ${viewMode === "list" ? "bg-gray-600 text-white" : "text-gray-400 hover:text-white"}`}
+          aria-label="列表视图"
         >
           ☰
         </button>
         <button
           onClick={() => setViewMode("grid")}
           className={`px-2 py-1 text-xs rounded ${viewMode === "grid" ? "bg-gray-600 text-white" : "text-gray-400 hover:text-white"}`}
+          aria-label="网格视图"
         >
           ⊞
         </button>
