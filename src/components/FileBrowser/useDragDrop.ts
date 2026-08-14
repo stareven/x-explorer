@@ -74,10 +74,14 @@ export function useDragDrop() {
       if (!localPath) continue;
       const remotePath = `${currentPath.replace(/\/$/, "")}/${file.name}`;
 
-      if (device.platform === "ios") {
-        await tauriApi.enqueueIosUpload(device.id, pkg!, localPath, remotePath);
-      } else {
-        await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
+      try {
+        if (device.platform === "ios") {
+          await tauriApi.enqueueIosUpload(device.id, pkg!, localPath, remotePath);
+        } else {
+          await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
+        }
+      } catch (e) {
+        console.error("Drop upload failed:", e);
       }
     }
   }
