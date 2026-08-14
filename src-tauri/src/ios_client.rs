@@ -34,6 +34,33 @@ pub fn parse_ideviceinstaller_list(output: &str) -> Vec<AppInfo> {
         .collect()
 }
 
+/// Parse output of `ideviceinstaller -u <udid> list -a CFBundleIdentifier -a
+/// UIFileSharingEnabled` into the set of bundle ids that have
+/// UIFileSharingEnabled=true. Only these apps can be browsed via
+/// `afcclient --documents <bundle_id>` (house_arrest's VendDocuments
+/// requires the entitlement; VendContainer / --container doesn't work for
+/// regular apps even when this flag is true, confirmed against a real
+/// device — see design doc).
+pub fn parse_file_sharing_enabled_ids(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .skip(1) // header: "CFBundleIdentifier, UIFileSharingEnabled"
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(2, ',').collect();
+            if parts.len() != 2 {
+                return None;
+            }
+            let bundle_id = parts[0].trim();
+            let flag = parts[1].trim();
+            if flag == "true" && !bundle_id.is_empty() {
+                Some(bundle_id.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Returns true if an ideviceinfo/idevicepair stderr message indicates the host
 /// is not yet trusted by the device (user hasn't tapped "Trust This Computer").
 pub fn is_untrusted_error(stderr: &str) -> bool {
@@ -116,9 +143,21 @@ pub fn list_ios_devices() -> Result<Vec<Device>, String> {
 
 #[tauri::command]
 pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
-    let out = run_idevice("ideviceinstaller", &["-u", &device_id, "-l"])?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(parse_ideviceinstaller_list(&text))
+    let sharing_out = run_idevice(
+        "ideviceinstaller",
+        &["-u", &device_id, "list", "-a", "CFBundleIdentifier", "-a", "UIFileSharingEnabled"],
+    )?;
+    let sharing_text = String::from_utf8_lossy(&sharing_out.stdout).to_string();
+    let enabled_ids = parse_file_sharing_enabled_ids(&sharing_text);
+
+    let list_out = run_idevice("ideviceinstaller", &["-u", &device_id, "-l"])?;
+    let list_text = String::from_utf8_lossy(&list_out.stdout).to_string();
+    let all_apps = parse_ideviceinstaller_list(&list_text);
+
+    Ok(all_apps
+        .into_iter()
+        .filter(|app| enabled_ids.contains(&app.bundle_id))
+        .collect())
 }
 
 #[tauri::command]
@@ -279,6 +318,29 @@ mod tests {
         assert!(is_untrusted_error("ERROR: Could not connect to lockdownd, error code -18 (Trust)"));
         assert!(is_untrusted_error("PairingDialogResponsePending"));
         assert!(!is_untrusted_error(""));
+    }
+
+    #[test]
+    fn test_parse_file_sharing_enabled_ids_filters_true_only() {
+        let output = "CFBundleIdentifier, UIFileSharingEnabled\ncn.com.gf.etj, \nrn.notes.best, true\ncom.openai.chat, \ncom.apple.Pages, true\n";
+        let ids = parse_file_sharing_enabled_ids(output);
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"rn.notes.best".to_string()));
+        assert!(ids.contains(&"com.apple.Pages".to_string()));
+        assert!(!ids.contains(&"cn.com.gf.etj".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_sharing_enabled_ids_skips_header() {
+        let output = "CFBundleIdentifier, UIFileSharingEnabled\ncom.example.app, true\n";
+        let ids = parse_file_sharing_enabled_ids(output);
+        assert_eq!(ids, vec!["com.example.app".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_file_sharing_enabled_ids_empty_output() {
+        let ids = parse_file_sharing_enabled_ids("");
+        assert_eq!(ids.len(), 0);
     }
 
     #[test]
