@@ -145,4 +145,17 @@ mod tests {
     fn test_sanitize_relative_path_allows_normal_relative_path() {
         assert_eq!(sanitize_relative_path("DCIM/photo.jpg"), Some("DCIM/photo.jpg".to_string()));
     }
+
+    #[test]
+    fn test_sanitize_relative_path_rejects_bare_parent_reference() {
+        assert_eq!(sanitize_relative_path(".."), None);
+    }
+
+    #[test]
+    fn test_sanitize_relative_path_allows_triple_dot_segment() {
+        // "..." is a legal filename/segment, not a `..` parent-reference. Only
+        // an exact ".." segment match should be rejected, not any segment
+        // that merely contains dots as a substring.
+        assert_eq!(sanitize_relative_path("foo/.../bar"), Some("foo/.../bar".to_string()));
+    }
 }
