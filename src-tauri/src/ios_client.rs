@@ -83,8 +83,39 @@ fn check_ios_trusted(device_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Parse `afcclient ... ls <path>` stdout: one entry name per line.
+pub fn parse_afcclient_ls(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Parsed subset of `afcclient ... info <path>` JSON output that FileEntry needs.
+pub struct AfcFileInfo {
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: Option<u64>,
+}
+
+/// Parse `afcclient ... info <path>` stdout (JSON) into an AfcFileInfo.
+/// Returns None if the output isn't valid JSON or is missing required fields.
+pub fn parse_afcclient_info(output: &str) -> Option<AfcFileInfo> {
+    let value: serde_json::Value = serde_json::from_str(output).ok()?;
+    let is_dir = value.get("st_ifmt")?.as_str()? == "S_IFDIR";
+    let size = value.get("st_size")?.as_u64()?;
+    let modified = value
+        .get("st_mtime")
+        .and_then(|v| v.as_u64())
+        .map(|nanos| nanos / 1_000_000_000);
+    Some(AfcFileInfo { is_dir, size, modified })
+}
+
 /// List files in a mounted ifuse path (uses std::fs).
-pub fn list_mounted_dir(mount_path: &str, sub_path: &str) -> Result<Vec<FileEntry>, String> {
+/// TODO(Task 3): remove once `list_ios_files`/`ios_download`/`ios_upload`/
+/// `ios_delete` are rewritten to use `run_afcclient` instead of an ifuse mount.
+fn list_mounted_dir(mount_path: &str, sub_path: &str) -> Result<Vec<FileEntry>, String> {
     let full_path = PathBuf::from(crate::file_ops::join_path(mount_path, sub_path));
     let normalized_sub_path = crate::file_ops::normalize_path(sub_path);
     let entries = std::fs::read_dir(&full_path)
@@ -115,6 +146,45 @@ fn run_idevice(bin_name: &str, args: &[&str]) -> Result<std::process::Output, St
         .args(args)
         .output()
         .map_err(|e| e.to_string())
+}
+
+/// Runs `afcclient -u <device_id> --documents <bundle_id> <args...>`.
+/// All iOS app file access goes through this — one-shot, stateless subprocess
+/// call per operation (no persistent mount to manage). `--container` is
+/// deliberately never used: confirmed against a real device that it fails
+/// with `InstallationLookupFailed` for regular (non-provisioned) apps even
+/// when UIFileSharingEnabled=true, while `--documents` works correctly.
+fn run_afcclient(device_id: &str, bundle_id: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    let bin = crate::bin_path::resolve("afcclient")?;
+    let mut full_args: Vec<&str> = vec!["-u", device_id, "--documents", bundle_id];
+    full_args.extend_from_slice(args);
+    std::process::Command::new(bin)
+        .args(&full_args)
+        .output()
+        .map_err(|e| e.to_string())
+}
+
+/// Builds the absolute afcclient-side path for a user-facing relative path.
+/// The `--documents` jail exposes `/Documents` as the only readable subtree
+/// (listing the literal `/` root itself returns "Permission denied" —
+/// confirmed on a real device; `info /` and `ls /Documents` both work fine).
+/// `sub_path` here is already sanitized (no `..`) by the caller.
+fn documents_path(sub_path: &str) -> String {
+    crate::file_ops::join_path("/Documents", sub_path)
+}
+
+/// Returns a clear, user-facing error for known house_arrest/AFC failure
+/// modes instead of the raw afcclient stderr.
+fn afc_error_message(stderr: &str, bundle_id: &str) -> String {
+    if stderr.contains("InstallationLookupFailed") {
+        format!("应用 {} 未开启文件共享，无法访问其文档目录", bundle_id)
+    } else if stderr.contains("Permission denied") {
+        "无权限访问该路径".to_string()
+    } else if stderr.trim().is_empty() {
+        format!("操作失败: {}", bundle_id)
+    } else {
+        stderr.trim().to_string()
+    }
 }
 
 #[tauri::command]
@@ -357,5 +427,65 @@ mod tests {
                 "/tmp/x-explorer/udid123/com.example.app".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_splits_lines() {
+        let output = "8es1421dg.be\nApplication Support.zip\n";
+        let names = parse_afcclient_ls(output);
+        assert_eq!(names, vec!["8es1421dg.be".to_string(), "Application Support.zip".to_string()]);
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_empty() {
+        let names = parse_afcclient_ls("");
+        assert_eq!(names.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_afcclient_info_json_dir() {
+        let json = "{\n  \"st_size\": 224,\n  \"st_blocks\": 0,\n  \"st_nlink\": 6,\n  \"st_ifmt\": \"S_IFDIR\",\n  \"st_mtime\": 1765271745750627872,\n  \"st_birthtime\": 1765271744308826162\n}\n";
+        let info = parse_afcclient_info(json).expect("should parse");
+        assert!(info.is_dir);
+        assert_eq!(info.size, 224);
+        assert_eq!(info.modified, Some(1765271745));
+    }
+
+    #[test]
+    fn test_parse_afcclient_info_json_file() {
+        let json = "{\n  \"st_size\": 42,\n  \"st_ifmt\": \"S_IFREG\",\n  \"st_mtime\": 1765271745750627872\n}\n";
+        let info = parse_afcclient_info(json).expect("should parse");
+        assert!(!info.is_dir);
+        assert_eq!(info.size, 42);
+    }
+
+    #[test]
+    fn test_parse_afcclient_info_invalid_json_returns_none() {
+        assert!(parse_afcclient_info("not json").is_none());
+    }
+
+    #[test]
+    fn test_documents_path_prefixes_with_documents_root() {
+        assert_eq!(documents_path("photo.jpg"), "/Documents/photo.jpg");
+        assert_eq!(documents_path(""), "/Documents");
+        assert_eq!(documents_path("sub/dir"), "/Documents/sub/dir");
+    }
+
+    #[test]
+    fn test_afc_error_message_installation_lookup_failed() {
+        let msg = afc_error_message("ERROR: InstallationLookupFailed\nThe App ...", "com.example.app");
+        assert_eq!(msg, "应用 com.example.app 未开启文件共享，无法访问其文档目录");
+    }
+
+    #[test]
+    fn test_afc_error_message_permission_denied() {
+        let msg = afc_error_message("Error: Failed to list '/': Permission denied (10)", "com.example.app");
+        assert_eq!(msg, "无权限访问该路径");
+    }
+
+    #[test]
+    fn test_afc_error_message_falls_back_to_raw_stderr() {
+        let msg = afc_error_message("some other error", "com.example.app");
+        assert_eq!(msg, "some other error");
     }
 }
