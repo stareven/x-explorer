@@ -16,7 +16,7 @@ x-explorer 是一个 macOS 原生桌面应用，用于查看连接的 iPhone 和
 - **框架：** Tauri（Rust 后端 + React/TypeScript 前端）
 - **前端：** React + TypeScript + Zustand（状态管理）+ Vitest（测试）
 - **后端：** Rust，通过内置二进制与设备通信
-- **内置工具：** adb（Android）、idevice_id / ideviceinstaller / ifuse（iOS），打包进 .app bundle
+- **内置工具：** adb（Android）、idevice_id / ideviceinfo / ideviceinstaller / afcclient（iOS，均随 libimobiledevice 提供），打包进 .app bundle
 
 ---
 
@@ -24,9 +24,9 @@ x-explorer 是一个 macOS 原生桌面应用，用于查看连接的 iPhone 和
 
 ### iOS 支持
 - 检测 USB / WiFi 连接的 iOS 设备
-- 列出已安装 App（bundle id + 名称）
-- 通过 AFC 协议访问 App 容器下的 `Documents`、`Cache`、`Library` 目录
-- 文件上传、下载、删除
+- 列出已安装 App（bundle id + 名称），**只展示 `UIFileSharingEnabled=true` 的 App**——这是 iOS 平台限制：`house_arrest` 服务的 `VendDocuments` 操作只对声明了该 entitlement 的 App 开放，`VendContainer`（完整容器访问）即使该 flag 为 true 也会因缺少开发者签名/描述文件而返回 `InstallationLookupFailed`，因此不使用 `--container`，只使用 `--documents`
+- 通过 `afcclient --documents <bundle_id>` 访问 App 的 `Documents` 目录（浏览根目录固定为 `/Documents`，不暴露 `--documents` 模式下 `/` 本身——该路径本身不可 `ls`，会返回 `Permission denied`，属于 house_arrest 的已知行为，只有 `/Documents` 及其子目录可读写）
+- 文件上传、下载、删除（已在真实设备上验证 put/get/rm 均正常工作）
 
 ### Android 支持
 - 检测 adb 连接的 Android 设备
@@ -63,11 +63,14 @@ React 前端  ⇄ (Tauri IPC)  ⇄  Rust 后端  ⇄ (subprocess)  ⇄  内置�
 
 ### `ios_client`
 - 调用 `idevice_id -l` 检测设备
-- 调用 `ideviceinstaller -l` 列出 App
-- **挂载生命周期管理**：每个设备+App 容器只 mount 一次，挂载路径缓存在内存 map（key 为 `device_id:bundle_id`）；切换到已挂载的容器时复用已有挂载，不重复 mount
-- App 切换（选中新 App）或设备断开时，unmount 旧的挂载点（`umount <mount_path>` 或 `diskutil unmount`），避免残留挂载
-- 通过挂载路径进行文件读写操作
+- 调用 `ideviceinstaller -u <udid> list -a CFBundleIdentifier -a UIFileSharingEnabled` 列出 App，前端只展示 `UIFileSharingEnabled=true` 的条目
+- **无状态 subprocess 调用**：不再维护挂载生命周期，每次文件操作都是一次独立的 `afcclient -u <udid> --documents <bundle_id> <cmd> <path>` 子进程调用，调用结束进程即退出，没有需要管理的挂载点/清理逻辑
+  - 列目录：`afcclient -u <udid> --documents <bundle_id> ls <path>`（`path` 相对于 `/Documents`，UI 层拼接 `/Documents` 前缀）
+  - 下载：`afcclient -u <udid> --documents <bundle_id> get <remote_path> <local_path>`
+  - 上传：`afcclient -u <udid> --documents <bundle_id> put <local_path> <remote_path>`
+  - 删除：`afcclient -u <udid> --documents <bundle_id> rm -rf <remote_path>`
 - **信任状态检测**：`idevice_id -l` 只返回已信任设备的 UDID；未信任设备通过 `idevicepair validate` 或尝试 `ideviceinfo` 检测失败来识别（返回 "Trust" 相关的 stderr 关键字），据此在 UI 上区分"已连接"和"待信任"状态
+- **house_arrest 特有错误处理**：`InstallationLookupFailed`（对应 App 未设置 `UIFileSharingEnabled` 或使用了 `--container`）与 AFC 状态码 10 / `Permission denied`（对 `--documents` 根路径 `/` 本身发起操作）需要分别识别并转换成明确的中文提示，而不是把原始 stderr 抛给用户
 
 ### `android_client`
 - 调用 `adb devices` 检测设备
@@ -88,7 +91,7 @@ React 前端  ⇄ (Tauri IPC)  ⇄  Rust 后端  ⇄ (subprocess)  ⇄  内置�
 ### `transfer_queue`
 - 所有导入/导出操作必须通过队列执行，前端不直接 await 单次 `invoke` 完成整个传输
 - 队列内部为每个任务派生一个后台线程/tokio task 执行实际的 adb/idevice 调用
-- 大文件下载/上传按分块（如 256KB）读写并在每个分块后 `emit` 一次 `transfer-progress`，暂不做真正的分块流式 API（`run-as cat`/`ideviceinstaller` 输出本身是整体的，进度以"已完成的文件数 / 总文件数"为粒度，而非字节级精确进度）
+- 大文件下载/上传按分块（如 256KB）读写并在每个分块后 `emit` 一次 `transfer-progress`，暂不做真正的分块流式 API（`run-as cat`/`afcclient get/put` 输出本身是整体的，进度以"已完成的文件数 / 总文件数"为粒度，而非字节级精确进度）
 - 支持并发上限（默认 3 个任务并行），暂停、取消、错误重试
 
 ---
@@ -132,8 +135,9 @@ App
 
 | 场景 | 处理方式 |
 |------|----------|
-| 设备断开 | 前端自动刷新设备列表，清除当前浏览状态；iOS 挂载点标记为失效，避免后续操作访问已失效的挂载路径 |
+| 设备断开 | 前端自动刷新设备列表，清除当前浏览状态 |
 | iOS 信任弹窗未确认 | 检测到 "Trust" 相关错误后，设备状态显示为「待信任」，提示用户在手机上点「信任此电脑」 |
+| iOS App 不支持文件共享 | `afcclient` 返回 `InstallationLookupFailed` 时，提示「该应用未开启文件共享，无法访问其文档目录」；App 列表默认已按 `UIFileSharingEnabled` 过滤，此错误主要用于兜底 |
 | adb unauthorized | 提示用户开启 USB 调试并在手机上授权 |
 | `run-as` 失败（App 非 debuggable） | 提示「该应用未开启调试模式，无法访问其数据目录」，不崩溃，外部存储浏览仍可用 |
 | 传输中断 | 标记任务失败，支持重试 |
@@ -168,7 +172,7 @@ x-explorer/
 │   │   ├── file_ops.rs
 │   │   ├── transfer_queue.rs
 │   │   └── main.rs
-│   └── binaries/               # 内置 adb、idevice 工具（macOS arm64/x86_64）
+│   └── binaries/               # 内置 adb、idevice 系列工具（含 afcclient，macOS arm64/x86_64）
 └── src/                        # React 前端
     ├── components/
     │   ├── DevicePanel/
