@@ -58,7 +58,8 @@ fn check_ios_trusted(device_id: &str) -> Result<(), String> {
 
 /// List files in a mounted ifuse path (uses std::fs).
 pub fn list_mounted_dir(mount_path: &str, sub_path: &str) -> Result<Vec<FileEntry>, String> {
-    let full_path = PathBuf::from(mount_path).join(sub_path.trim_start_matches('/'));
+    let full_path = PathBuf::from(crate::file_ops::join_path(mount_path, sub_path));
+    let normalized_sub_path = crate::file_ops::normalize_path(sub_path);
     let entries = std::fs::read_dir(&full_path)
         .map_err(|e| format!("Cannot read {}: {}", full_path.display(), e))?;
     let mut result = Vec::new();
@@ -71,7 +72,7 @@ pub fn list_mounted_dir(mount_path: &str, sub_path: &str) -> Result<Vec<FileEntr
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs());
         result.push(FileEntry {
-            path: format!("{}/{}", sub_path.trim_end_matches('/'), name),
+            path: crate::file_ops::join_path(&normalized_sub_path, &name),
             name,
             is_dir: meta.is_dir(),
             size: meta.len(),
@@ -123,13 +124,17 @@ pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
 #[tauri::command]
 pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Result<Vec<FileEntry>, String> {
     let mount_path = mount_ios_container(&device_id, &bundle_id)?;
-    list_mounted_dir(&mount_path, &path)
+    let safe_path = crate::file_ops::sanitize_relative_path(&path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    list_mounted_dir(&mount_path, &safe_path)
 }
 
 /// Not a #[tauri::command] — called internally by transfer_queue only.
 pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
     let mount_path = mount_ios_container(&device_id, &bundle_id)?;
-    let src = PathBuf::from(crate::file_ops::join_path(&mount_path, &remote_path));
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    let src = PathBuf::from(crate::file_ops::join_path(&mount_path, &safe_remote));
     std::fs::copy(&src, &local_path).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -137,7 +142,9 @@ pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, l
 /// Not a #[tauri::command] — called internally by transfer_queue only.
 pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remote_path: String) -> Result<(), String> {
     let mount_path = mount_ios_container(&device_id, &bundle_id)?;
-    let dst = PathBuf::from(crate::file_ops::join_path(&mount_path, &remote_path));
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    let dst = PathBuf::from(crate::file_ops::join_path(&mount_path, &safe_remote));
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -148,7 +155,9 @@ pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remo
 #[tauri::command]
 pub fn ios_delete(device_id: String, bundle_id: String, remote_path: String) -> Result<(), String> {
     let mount_path = mount_ios_container(&device_id, &bundle_id)?;
-    let target = PathBuf::from(crate::file_ops::join_path(&mount_path, &remote_path));
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    let target = PathBuf::from(crate::file_ops::join_path(&mount_path, &safe_remote));
     if target.is_dir() {
         std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
     } else {

@@ -185,9 +185,11 @@ pub fn list_android_files(
 ) -> Result<Vec<FileEntry>, String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
+    let safe_path = crate::file_ops::sanitize_relative_path(&path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let full_path = match &package {
-        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &path),
-        None => crate::file_ops::normalize_path(&path),
+        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &safe_path),
+        None => crate::file_ops::normalize_path(&safe_path),
     };
     let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
     args.extend(shell_args(&package, &["ls", "-la", &full_path]));
@@ -216,9 +218,11 @@ pub fn android_download(
 ) -> Result<(), String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote_path = match &package {
-        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &remote_path),
-        None => crate::file_ops::normalize_path(&remote_path),
+        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &safe_remote),
+        None => crate::file_ops::normalize_path(&safe_remote),
     };
     match package {
         None => {
@@ -257,9 +261,11 @@ pub fn android_upload(
 ) -> Result<(), String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote_path = match &package {
-        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &remote_path),
-        None => crate::file_ops::normalize_path(&remote_path),
+        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &safe_remote),
+        None => crate::file_ops::normalize_path(&safe_remote),
     };
     match package {
         None => {
@@ -320,9 +326,11 @@ pub fn android_delete(
 ) -> Result<(), String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote_path = match &package {
-        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &remote_path),
-        None => crate::file_ops::normalize_path(&remote_path),
+        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &safe_remote),
+        None => crate::file_ops::normalize_path(&safe_remote),
     };
     let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
     args.extend(shell_args(&package, &["rm", "-rf", &remote_path]));
