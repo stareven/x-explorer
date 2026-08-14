@@ -1,53 +1,259 @@
-//! Talks to libimobiledevice-family binaries to enumerate iOS devices, apps and files.
-//!
-//! STUB: This module is a placeholder created in Task 1 so the project compiles
-//! standalone and the Tauri commands referenced by `main.rs` resolve. The real
-//! implementation (and the `ios_download`/`ios_upload` plain functions used
-//! internally by `transfer_queue`) is added in Task 4.
-
 use crate::types::{AppInfo, Device, FileEntry};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+/// Process-wide cache of active ifuse mounts, keyed by "device_id:bundle_id".
+static MOUNTS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+/// Parse output of `idevice_id -l` into device ID list.
+pub fn parse_idevice_ids(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Parse output of `ideviceinstaller -l` into AppInfo list.
+/// Format: CFBundleIdentifier - CFBundleVersion - CFBundleDisplayName
+pub fn parse_ideviceinstaller_list(output: &str) -> Vec<AppInfo> {
+    output
+        .lines()
+        .filter(|line| line.contains(" - "))
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.splitn(3, " - ").collect();
+            if parts.len() < 3 {
+                return None;
+            }
+            Some(AppInfo {
+                bundle_id: parts[0].trim().to_string(),
+                name: parts[2].trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Returns true if an ideviceinfo/idevicepair stderr message indicates the host
+/// is not yet trusted by the device (user hasn't tapped "Trust This Computer").
+pub fn is_untrusted_error(stderr: &str) -> bool {
+    stderr.contains("Trust") || stderr.contains("PairingDialogResponsePending")
+}
+
+/// Runs `ideviceinfo -u <udid>` and returns a clear, user-facing error if the
+/// device is disconnected or hasn't approved this host yet. Called before any
+/// operation that would otherwise fail with a much less clear ifuse/idevice
+/// error further down the call chain (mount, list, download, upload, delete).
+fn check_ios_trusted(device_id: &str) -> Result<(), String> {
+    let out = run_idevice("ideviceinfo", &["-u", device_id])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if is_untrusted_error(&stderr) {
+        return Err("设备待信任或未授权，请在设备上确认后重试".to_string());
+    }
+    if !out.status.success() {
+        return Err("设备未连接".to_string());
+    }
+    Ok(())
+}
+
+/// List files in a mounted ifuse path (uses std::fs).
+pub fn list_mounted_dir(mount_path: &str, sub_path: &str) -> Result<Vec<FileEntry>, String> {
+    let full_path = PathBuf::from(mount_path).join(sub_path.trim_start_matches('/'));
+    let entries = std::fs::read_dir(&full_path)
+        .map_err(|e| format!("Cannot read {}: {}", full_path.display(), e))?;
+    let mut result = Vec::new();
+    for entry in entries.flatten() {
+        let meta = entry.metadata().map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs());
+        result.push(FileEntry {
+            path: format!("{}/{}", sub_path.trim_end_matches('/'), name),
+            name,
+            is_dir: meta.is_dir(),
+            size: meta.len(),
+            modified,
+        });
+    }
+    Ok(result)
+}
+
+fn run_idevice(bin_name: &str, args: &[&str]) -> Result<std::process::Output, String> {
+    let bin = crate::bin_path::resolve(bin_name)?;
+    std::process::Command::new(bin)
+        .args(args)
+        .output()
+        .map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub fn list_ios_devices() -> Result<Vec<Device>, String> {
-    Ok(Vec::new())
+    let out = run_idevice("idevice_id", &["-l"])?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let ids = parse_idevice_ids(&text);
+    let mut devices = Vec::new();
+    for id in ids {
+        let info_out = run_idevice("ideviceinfo", &["-u", &id])?;
+        let stderr = String::from_utf8_lossy(&info_out.stderr);
+        let status = if is_untrusted_error(&stderr) {
+            "unauthorized".to_string()
+        } else {
+            "connected".to_string()
+        };
+        devices.push(Device {
+            name: id.clone(),
+            id,
+            platform: "ios".to_string(),
+            status,
+        });
+    }
+    Ok(devices)
 }
 
 #[tauri::command]
-pub fn list_ios_apps(_device_id: String) -> Result<Vec<AppInfo>, String> {
-    Ok(Vec::new())
+pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
+    let out = run_idevice("ideviceinstaller", &["-u", &device_id, "-l"])?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    Ok(parse_ideviceinstaller_list(&text))
 }
 
 #[tauri::command]
-pub fn list_ios_files(_device_id: String, _bundle_id: String, _path: String) -> Result<Vec<FileEntry>, String> {
-    Ok(Vec::new())
+pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Result<Vec<FileEntry>, String> {
+    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    list_mounted_dir(&mount_path, &path)
+}
+
+/// Not a #[tauri::command] — called internally by transfer_queue only.
+pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
+    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    let src = PathBuf::from(crate::file_ops::join_path(&mount_path, &remote_path));
+    std::fs::copy(&src, &local_path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Not a #[tauri::command] — called internally by transfer_queue only.
+pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remote_path: String) -> Result<(), String> {
+    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    let dst = PathBuf::from(crate::file_ops::join_path(&mount_path, &remote_path));
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::copy(&local_path, &dst).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
-pub fn ios_delete(_device_id: String, _bundle_id: String, _path: String) -> Result<(), String> {
-    Err("not implemented".into())
+pub fn ios_delete(device_id: String, bundle_id: String, remote_path: String) -> Result<(), String> {
+    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    let target = PathBuf::from(crate::file_ops::join_path(&mount_path, &remote_path));
+    if target.is_dir() {
+        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(&target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
+/// Explicitly unmount a container, e.g. when the user switches to a different app
+/// or the device disconnects. Safe to call even if not currently mounted.
 #[tauri::command]
-pub fn ios_unmount_container(_device_id: String, _bundle_id: String) -> Result<(), String> {
-    Err("not implemented".into())
+pub fn ios_unmount_container(device_id: String, bundle_id: String) -> Result<(), String> {
+    let key = format!("{}:{}", device_id, bundle_id);
+    let mut guard = MOUNTS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    if let Some(mount_path) = map.remove(&key) {
+        let _ = std::process::Command::new("umount").arg(&mount_path).status();
+    }
+    Ok(())
 }
 
-// NOT registered as tauri::command — called internally by transfer_queue (Task 6).
-pub fn ios_download(
-    _device_id: String,
-    _bundle_id: String,
-    _src: String,
-    _dst: String,
-) -> Result<(), String> {
-    Err("not implemented".into())
+/// Mount an iOS app container via ifuse, returning the mount path.
+/// Reuses an existing mount for the same device+bundle if already mounted.
+/// Checks trust state first so a disconnected/untrusted device produces the
+/// same clear "待信任/未授权" error used elsewhere, instead of a raw
+/// "ifuse mount failed" message with no actionable cause.
+fn mount_ios_container(device_id: &str, bundle_id: &str) -> Result<String, String> {
+    let key = format!("{}:{}", device_id, bundle_id);
+    let mut guard = MOUNTS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+
+    if let Some(existing) = map.get(&key) {
+        return Ok(existing.clone());
+    }
+    drop(guard);
+
+    check_ios_trusted(device_id)?;
+
+    let mut guard = MOUNTS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+
+    let mount_path = std::env::temp_dir()
+        .join("x-explorer")
+        .join(device_id)
+        .join(bundle_id);
+    std::fs::create_dir_all(&mount_path).map_err(|e| e.to_string())?;
+    let ifuse = crate::bin_path::resolve("ifuse")?;
+    let status = std::process::Command::new(ifuse)
+        .args([
+            "--udid", device_id,
+            "--container", bundle_id,
+            mount_path.to_str().unwrap(),
+        ])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!("ifuse mount failed for {}", bundle_id));
+    }
+
+    let path_str = mount_path.to_string_lossy().to_string();
+    map.insert(key, path_str.clone());
+    Ok(path_str)
 }
 
-// NOT registered as tauri::command — called internally by transfer_queue (Task 6).
-pub fn ios_upload(
-    _device_id: String,
-    _bundle_id: String,
-    _src: String,
-    _dst: String,
-) -> Result<(), String> {
-    Err("not implemented".into())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_idevice_ids() {
+        let output = "abc123def456\nxyz789uvw012\n";
+        let ids = parse_idevice_ids(output);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], "abc123def456");
+    }
+
+    #[test]
+    fn test_parse_idevice_ids_empty() {
+        let ids = parse_idevice_ids("");
+        assert_eq!(ids.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_ideviceinstaller_list() {
+        let output = "com.example.myapp - 1.0.0 - My App\ncom.foo.bar - 2.1 - Foo Bar\n";
+        let apps = parse_ideviceinstaller_list(&output);
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].bundle_id, "com.example.myapp");
+        assert_eq!(apps[0].name, "My App");
+        assert_eq!(apps[1].bundle_id, "com.foo.bar");
+        assert_eq!(apps[1].name, "Foo Bar");
+    }
+
+    #[test]
+    fn test_parse_ideviceinstaller_list_skips_header() {
+        let output = "Total: 2 apps\ncom.example.myapp - 1.0 - My App\n";
+        let apps = parse_ideviceinstaller_list(&output);
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].bundle_id, "com.example.myapp");
+    }
+
+    #[test]
+    fn test_is_untrusted_error_detects_trust_pending() {
+        assert!(is_untrusted_error("ERROR: Could not connect to lockdownd, error code -18 (Trust)"));
+        assert!(is_untrusted_error("PairingDialogResponsePending"));
+        assert!(!is_untrusted_error(""));
+    }
 }
