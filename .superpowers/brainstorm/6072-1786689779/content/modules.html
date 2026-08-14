@@ -1,0 +1,86 @@
+<h2>核心模块设计</h2>
+<p class="subtitle">各模块职责与接口划分</p>
+
+<div style="padding: 16px; display: flex; flex-direction: column; gap: 16px;">
+
+  <!-- iOS Client -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 10px;">📱 ios_client — iOS 设备通信</div>
+    <div style="display: flex; gap: 16px;">
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 4px;">职责</div>
+        <ul style="margin: 0; padding-left: 14px; line-height: 1.8;">
+          <li>检测 USB/WiFi 连接的 iOS 设备</li>
+          <li>列出安装的 App（bundle id + 名称）</li>
+          <li>通过 AFC 协议访问 Documents / Cache / Library</li>
+          <li>上传 / 下载 / 删除文件</li>
+        </ul>
+      </div>
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 4px;">调用工具</div>
+        <div style="background: #1a1a2e; padding: 6px 10px; border-radius: 4px; font-family: monospace; line-height: 1.8;">
+          idevice_id -l<br/>
+          ideviceinstaller -l<br/>
+          ifuse --container &lt;bundle_id&gt;<br/>
+          cp / rm via mounted path
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Android Client -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 10px;">🤖 android_client — Android 设备通信</div>
+    <div style="display: flex; gap: 16px;">
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 4px;">职责</div>
+        <ul style="margin: 0; padding-left: 14px; line-height: 1.8;">
+          <li>检测 adb 连接设备</li>
+          <li>列出已安装 App（package list）</li>
+          <li>访问 /data/data/&lt;pkg&gt; (run-as) + /sdcard</li>
+          <li>adb pull / push / ls / rm</li>
+        </ul>
+      </div>
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 4px;">调用工具</div>
+        <div style="background: #1a1a2e; padding: 6px 10px; border-radius: 4px; font-family: monospace; line-height: 1.8;">
+          adb devices<br/>
+          adb shell pm list packages<br/>
+          adb shell ls -la &lt;path&gt;<br/>
+          adb pull / adb push
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- File Ops + Transfer Queue -->
+  <div style="display: flex; gap: 16px;">
+    <div style="flex: 1; background: #0f3460; border-radius: 8px; padding: 14px;">
+      <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 8px;">📂 file_ops</div>
+      <ul style="margin: 0; padding-left: 14px; font-size: 10px; color: #ccc; line-height: 1.8;">
+        <li>列目录（返回文件元信息）</li>
+        <li>读取单文件内容</li>
+        <li>创建 / 删除 / 重命名</li>
+        <li>批量操作（多文件打包）</li>
+      </ul>
+    </div>
+    <div style="flex: 1; background: #0f3460; border-radius: 8px; padding: 14px;">
+      <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 8px;">⏳ transfer_queue</div>
+      <ul style="margin: 0; padding-left: 14px; font-size: 10px; color: #ccc; line-height: 1.8;">
+        <li>任务队列（并发控制）</li>
+        <li>进度事件推送（Tauri emit）</li>
+        <li>支持暂停 / 取消</li>
+        <li>错误重试</li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- Device Manager -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 8px;">🔌 device_manager — 热插拔检测</div>
+    <div style="font-size: 10px; color: #ccc;">
+      轮询 <code style="background:#1a1a2e;padding:1px 4px;border-radius:3px;">adb devices</code> 和 <code style="background:#1a1a2e;padding:1px 4px;border-radius:3px;">idevice_id -l</code>（每 2 秒），设备连接/断开时通过 Tauri Event 推送前端更新设备列表。
+    </div>
+  </div>
+
+</div>

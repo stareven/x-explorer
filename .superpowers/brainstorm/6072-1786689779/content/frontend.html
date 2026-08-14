@@ -1,0 +1,61 @@
+<h2>前端组件设计</h2>
+<p class="subtitle">React 组件树与交互逻辑</p>
+
+<div style="padding: 16px; display: flex; flex-direction: column; gap: 14px;">
+
+  <!-- 组件树 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 10px;">组件树结构</div>
+    <div style="font-family: monospace; font-size: 11px; color: #ccc; line-height: 2;">
+      <span style="color:#e94560">App</span><br/>
+      ├── <span style="color:#4fc3f7">DevicePanel</span> <span style="color:#666">（左栏）</span><br/>
+      │&nbsp;&nbsp;&nbsp;├── DeviceList — 设备卡片，连接状态徽标<br/>
+      │&nbsp;&nbsp;&nbsp;└── AppList — 已安装 App，含图标缓存<br/>
+      ├── <span style="color:#4fc3f7">FileBrowser</span> <span style="color:#666">（右侧主区）</span><br/>
+      │&nbsp;&nbsp;&nbsp;├── BreadcrumbBar — 路径导航，可点击跳转<br/>
+      │&nbsp;&nbsp;&nbsp;├── Toolbar — 视图切换 / 导入导出 / 多选操作<br/>
+      │&nbsp;&nbsp;&nbsp;├── FileGrid — 网格视图（图标 + 文件名）<br/>
+      │&nbsp;&nbsp;&nbsp;└── FileList — 列表视图（名称/大小/时间）<br/>
+      └── <span style="color:#4fc3f7">TransferPanel</span> <span style="color:#666">（底部浮层）</span><br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;└── TransferItem — 进度条 + 取消按钮
+    </div>
+  </div>
+
+  <!-- 拖拽设计 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 10px;">🖱️ 拖拽交互</div>
+    <div style="display: flex; gap: 16px;">
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 6px;">从设备拖出到 Mac</div>
+        <div style="background: #1a1a2e; padding: 8px; border-radius: 4px; line-height: 1.8;">
+          拖拽文件 → 触发 Tauri <code>startDrag</code> API → 系统接管拖拽 → 放到 Finder/桌面自动下载
+        </div>
+      </div>
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 6px;">从 Mac 拖入设备</div>
+        <div style="background: #1a1a2e; padding: 8px; border-radius: 4px; line-height: 1.8;">
+          Mac 文件拖入 FileBrowser → ondrop 捕获本地路径 → 调用 Rust upload_files → 加入 transfer_queue
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 多选 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 8px;">☑️ 多选操作</div>
+    <div style="font-size: 10px; color: #ccc; line-height: 1.9;">
+      • Cmd+点击 逐个选中 &nbsp;|&nbsp; Shift+点击 范围选中 &nbsp;|&nbsp; Cmd+A 全选<br/>
+      • 选中后 Toolbar 显示批量操作按钮：导出、删除<br/>
+      • 拖拽选中项整体移动（多文件一次性传输）
+    </div>
+  </div>
+
+  <!-- 状态管理 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 8px;">📦 状态管理</div>
+    <div style="font-size: 10px; color: #ccc;">
+      使用 <strong style="color:#4fc3f7">Zustand</strong>（轻量）管理全局状态：设备列表、当前选中设备/App、当前路径、文件列表缓存、传输队列。Tauri Event 监听设备变化和传输进度，自动更新 store。
+    </div>
+  </div>
+
+</div>

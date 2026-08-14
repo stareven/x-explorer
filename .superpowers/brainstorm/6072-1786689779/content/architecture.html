@@ -1,0 +1,58 @@
+<h2>系统架构概览</h2>
+<p class="subtitle">x-explorer 整体模块关系</p>
+
+<div style="padding: 16px;">
+  <div style="display: flex; gap: 24px; align-items: flex-start;">
+
+    <!-- 前端 -->
+    <div style="flex: 1; background: #0f3460; border-radius: 8px; padding: 16px;">
+      <div style="color: #e94560; font-weight: bold; font-size: 13px; margin-bottom: 12px;">React 前端 (TypeScript)</div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">DevicePanel — 设备 + App 列表</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">FileBrowser — 文件树浏览</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">FileGrid/List — 双视图切换</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">Toolbar — 导入/导出/多选操作</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">DragDrop — 拖拽层（双向）</div>
+      </div>
+    </div>
+
+    <!-- 箭头 -->
+    <div style="display: flex; align-items: center; padding-top: 60px; color: #888; font-size: 20px;">⇄<br/><span style="font-size: 9px; color: #666;">Tauri IPC</span></div>
+
+    <!-- Rust 后端 -->
+    <div style="flex: 1; background: #0f3460; border-radius: 8px; padding: 16px;">
+      <div style="color: #e94560; font-weight: bold; font-size: 13px; margin-bottom: 12px;">Rust 后端 (Tauri Commands)</div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">device_manager — 设备检测与连接</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">ios_client — AFC 协议封装</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">android_client — adb 命令封装</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">file_ops — 读/写/列目录/传输</div>
+        <div style="background: #16213e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">transfer_queue — 传输队列/进度</div>
+      </div>
+    </div>
+
+    <!-- 箭头 -->
+    <div style="display: flex; align-items: center; padding-top: 60px; color: #888; font-size: 20px;">⇄<br/><span style="font-size: 9px; color: #666;">subprocess</span></div>
+
+    <!-- 内置工具 -->
+    <div style="flex: 0.7; background: #0f3460; border-radius: 8px; padding: 16px;">
+      <div style="color: #e94560; font-weight: bold; font-size: 13px; margin-bottom: 12px;">内置二进制</div>
+      <div style="display: flex; flex-direction: column; gap: 8px;">
+        <div style="background: #1a1a2e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">adb (Android)</div>
+        <div style="background: #1a1a2e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">ideviceinstaller</div>
+        <div style="background: #1a1a2e; padding: 8px 12px; border-radius: 5px; font-size: 11px;">ifuse / idevice CLI</div>
+      </div>
+      <div style="margin-top: 12px; border-top: 1px solid #333; padding-top: 10px;">
+        <div style="color: #888; font-size: 10px; margin-bottom: 6px;">连接设备</div>
+        <div style="background: #1a1a2e; padding: 6px 10px; border-radius: 5px; font-size: 11px;">📱 iOS (USB/WiFi)</div>
+        <div style="background: #1a1a2e; padding: 6px 10px; border-radius: 5px; font-size: 11px; margin-top: 4px;">🤖 Android (ADB)</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="margin-top: 20px; background: #0d1b2a; border-radius: 8px; padding: 12px; font-size: 11px; color: #aaa;">
+    <span style="color: #e94560; font-weight: bold;">数据流：</span>
+    前端通过 Tauri invoke() 调用 Rust Command → Rust 调用内置 adb/idevice 工具 → 解析输出 → 返回结构化数据给前端渲染
+  </div>
+</div>

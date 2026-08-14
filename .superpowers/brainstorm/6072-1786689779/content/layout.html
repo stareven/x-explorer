@@ -1,0 +1,103 @@
+<h2>主界面布局方案</h2>
+<p class="subtitle">选择你偏好的整体布局结构</p>
+
+<div class="cards">
+  <div class="card" data-choice="a" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;border-radius:8px;padding:12px;font-size:11px;color:#ccc;min-height:200px">
+        <div class="mock-nav" style="background:#16213e;color:#eee;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:10px">📱 x-explorer</div>
+        <div style="display:flex;gap:8px;height:170px">
+          <div style="width:160px;background:#0f3460;border-radius:4px;padding:8px">
+            <div style="color:#e94560;font-size:9px;font-weight:bold;margin-bottom:6px">设备列表</div>
+            <div style="background:#1a1a2e;padding:4px 6px;border-radius:3px;margin-bottom:4px;font-size:9px">📱 iPhone 15</div>
+            <div style="background:#e94560;padding:4px 6px;border-radius:3px;margin-bottom:4px;font-size:9px;color:white">🤖 Pixel 7</div>
+            <div style="border-top:1px solid #333;margin:8px 0;"></div>
+            <div style="color:#888;font-size:9px;margin-bottom:4px">APP 列表</div>
+            <div style="background:#1a1a2e;padding:4px 6px;border-radius:3px;margin-bottom:3px;font-size:9px">微信</div>
+            <div style="background:#1a1a2e;padding:4px 6px;border-radius:3px;margin-bottom:3px;font-size:9px">支付宝</div>
+          </div>
+          <div style="flex:1;background:#0d1b2a;border-radius:4px;padding:8px">
+            <div style="color:#aaa;font-size:9px;margin-bottom:6px">📂 /Documents</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px">
+              <div style="background:#1a1a2e;padding:6px;border-radius:3px;font-size:9px;text-align:center">📁 images</div>
+              <div style="background:#1a1a2e;padding:6px;border-radius:3px;font-size:9px;text-align:center">📁 cache</div>
+              <div style="background:#1a1a2e;padding:6px;border-radius:3px;font-size:9px;text-align:center">📄 config.json</div>
+              <div style="background:#1a1a2e;padding:6px;border-radius:3px;font-size:9px;text-align:center">📄 data.db</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>A. 三栏布局</h3>
+      <p>左栏：设备 + App 列表；右侧：文件浏览区。结构清晰，类似 Finder 侧边栏体验。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;border-radius:8px;padding:12px;font-size:11px;color:#ccc;min-height:200px">
+        <div class="mock-nav" style="background:#16213e;color:#eee;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:10px">📱 x-explorer</div>
+        <div style="display:flex;gap:8px;height:170px">
+          <div style="width:110px;background:#0f3460;border-radius:4px;padding:8px">
+            <div style="color:#e94560;font-size:9px;font-weight:bold;margin-bottom:6px">设备</div>
+            <div style="background:#e94560;padding:4px 6px;border-radius:3px;margin-bottom:3px;font-size:9px;color:white">📱 iPhone</div>
+            <div style="background:#1a1a2e;padding:4px 6px;border-radius:3px;margin-bottom:3px;font-size:9px">🤖 Pixel</div>
+          </div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:6px">
+            <div style="background:#16213e;border-radius:4px;padding:6px">
+              <div style="color:#aaa;font-size:9px;margin-bottom:4px">App 选择</div>
+              <div style="display:flex;gap:4px">
+                <div style="background:#e94560;padding:3px 8px;border-radius:3px;font-size:9px;color:white">微信</div>
+                <div style="background:#0d1b2a;padding:3px 8px;border-radius:3px;font-size:9px">支付宝</div>
+                <div style="background:#0d1b2a;padding:3px 8px;border-radius:3px;font-size:9px">抖音</div>
+              </div>
+            </div>
+            <div style="flex:1;background:#0d1b2a;border-radius:4px;padding:8px">
+              <div style="color:#aaa;font-size:9px;margin-bottom:6px">📂 微信 / Documents</div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px">
+                <div style="background:#1a1a2e;padding:5px;border-radius:3px;font-size:9px;text-align:center">📁 images</div>
+                <div style="background:#1a1a2e;padding:5px;border-radius:3px;font-size:9px;text-align:center">📄 config</div>
+                <div style="background:#1a1a2e;padding:5px;border-radius:3px;font-size:9px;text-align:center">📄 db</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B. 两栏 + 顶部 Tab</h3>
+      <p>左栏：设备列表；右侧顶部：App Tab 切换；下方：文件区。更紧凑，适合小窗口。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="c" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div style="background:#1a1a2e;border-radius:8px;padding:12px;font-size:11px;color:#ccc;min-height:200px">
+        <div class="mock-nav" style="background:#16213e;color:#eee;padding:6px 10px;border-radius:4px;margin-bottom:8px;font-size:10px">
+          <span style="margin-right:8px">📱 iPhone 15 ▾</span>
+          <span style="background:#e94560;padding:2px 8px;border-radius:3px;font-size:9px;color:white">微信</span>
+          <span style="margin-left:8px;font-size:9px;color:#888">/ Documents</span>
+        </div>
+        <div style="background:#0d1b2a;border-radius:4px;padding:8px;min-height:155px">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:8px">
+            <span style="font-size:9px;color:#888">← →</span>
+            <span style="font-size:9px;color:#aaa">Documents / images</span>
+            <span style="margin-left:auto;font-size:9px;background:#0f3460;padding:2px 6px;border-radius:3px">导入 导出</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px">
+            <div style="background:#1a1a2e;padding:8px 4px;border-radius:3px;font-size:9px;text-align:center">📁<br/>img</div>
+            <div style="background:#1a1a2e;padding:8px 4px;border-radius:3px;font-size:9px;text-align:center">📁<br/>vid</div>
+            <div style="background:#e94560;padding:8px 4px;border-radius:3px;font-size:9px;text-align:center;color:white">📄<br/>cfg</div>
+            <div style="background:#1a1a2e;padding:8px 4px;border-radius:3px;font-size:9px;text-align:center">📄<br/>db</div>
+            <div style="background:#1a1a2e;padding:8px 4px;border-radius:3px;font-size:9px;text-align:center">📄<br/>log</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>C. 沉浸式文件浏览</h3>
+      <p>顶部工具栏选择设备 + App（下拉菜单），主区域全屏显示文件网格/列表。最大化文件浏览空间。</p>
+    </div>
+  </div>
+</div>

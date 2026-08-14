@@ -1,0 +1,76 @@
+<h2>错误处理 & 测试策略</h2>
+<p class="subtitle">异常处理边界与验证方案</p>
+
+<div style="padding: 16px; display: flex; flex-direction: column; gap: 14px;">
+
+  <!-- 错误处理 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 10px;">⚠️ 错误处理边界</div>
+    <div style="display: flex; gap: 12px;">
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 6px;">设备层</div>
+        <ul style="margin: 0; padding-left: 14px; line-height: 1.8;">
+          <li>设备断开 → 前端自动刷新设备列表，清除当前浏览状态</li>
+          <li>iOS 信任弹窗未确认 → 提示用户在手机上点「信任」</li>
+          <li>adb unauthorized → 提示用户开启 USB 调试并授权</li>
+        </ul>
+      </div>
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 6px;">文件操作层</div>
+        <ul style="margin: 0; padding-left: 14px; line-height: 1.8;">
+          <li>权限不足（App 数据目录）→ 显示错误原因，不崩溃</li>
+          <li>传输中断 → 标记任务失败，支持重试</li>
+          <li>目标路径已存在 → 提示覆盖/跳过/重命名</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 测试策略 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 10px;">🧪 测试策略</div>
+    <div style="display: flex; gap: 12px;">
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 6px;">Rust 单元测试</div>
+        <ul style="margin: 0; padding-left: 14px; line-height: 1.8;">
+          <li>adb/idevice 命令解析逻辑</li>
+          <li>文件路径规范化</li>
+          <li>传输队列调度逻辑</li>
+        </ul>
+      </div>
+      <div style="flex: 1; font-size: 10px; color: #ccc;">
+        <div style="color: #aaa; margin-bottom: 6px;">前端测试</div>
+        <ul style="margin: 0; padding-left: 14px; line-height: 1.8;">
+          <li>Vitest — 组件逻辑 + Zustand store</li>
+          <li>Mock Tauri invoke — 不依赖真实设备</li>
+          <li>拖拽交互用 userEvent 模拟</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- 项目结构 -->
+  <div style="background: #0f3460; border-radius: 8px; padding: 14px;">
+    <div style="color: #e94560; font-weight: bold; font-size: 12px; margin-bottom: 8px;">📁 项目目录结构</div>
+    <div style="font-family: monospace; font-size: 10px; color: #ccc; line-height: 1.9;">
+      x-explorer/<br/>
+      ├── src-tauri/ <span style="color:#666">（Rust 后端）</span><br/>
+      │&nbsp;&nbsp;&nbsp;├── src/<br/>
+      │&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── device_manager.rs<br/>
+      │&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── ios_client.rs<br/>
+      │&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── android_client.rs<br/>
+      │&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── file_ops.rs<br/>
+      │&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── transfer_queue.rs<br/>
+      │&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── main.rs<br/>
+      │&nbsp;&nbsp;&nbsp;└── binaries/ <span style="color:#666">（内置 adb, idevice 工具）</span><br/>
+      └── src/ <span style="color:#666">（React 前端）</span><br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;├── components/<br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── DevicePanel/<br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;├── FileBrowser/<br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;│&nbsp;&nbsp;&nbsp;└── TransferPanel/<br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;├── store/ <span style="color:#666">（Zustand）</span><br/>
+      &nbsp;&nbsp;&nbsp;&nbsp;└── hooks/
+    </div>
+  </div>
+
+</div>
