@@ -103,10 +103,10 @@ export function useDeviceListener() {
 // rather than polling.
 export function useTransferListener() {
   const upsertTransfer = useStore((s) => s.upsertTransfer);
-  const transfers = useStore((s) => s.transfers);
   useEffect(() => {
     const unlisten = listen<TransferProgress>("transfer-progress", (event) => {
       const p = event.payload;
+      const { transfers } = useStore.getState();
       const existing = transfers.find((t) => t.id === p.task_id);
       upsertTransfer({
         id: p.task_id,
@@ -122,6 +122,5 @@ export function useTransferListener() {
     return () => {
       unlisten.then((fn) => fn());
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [upsertTransfer]);
 }
