@@ -24,7 +24,6 @@ pub fn run() {
             ios_client::list_ios_apps,
             ios_client::list_ios_files,
             ios_client::ios_delete,
-            ios_client::ios_unmount_container,
             android_client::list_android_devices,
             android_client::list_android_apps,
             android_client::list_android_files,

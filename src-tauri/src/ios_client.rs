@@ -1,10 +1,4 @@
 use crate::types::{AppInfo, Device, FileEntry};
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Mutex;
-
-/// Process-wide cache of active ifuse mounts, keyed by "device_id:bundle_id".
-static MOUNTS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// Parse output of `idevice_id -l` into device ID list.
 pub fn parse_idevice_ids(output: &str) -> Vec<String> {
@@ -112,34 +106,6 @@ pub fn parse_afcclient_info(output: &str) -> Option<AfcFileInfo> {
     Some(AfcFileInfo { is_dir, size, modified })
 }
 
-/// List files in a mounted ifuse path (uses std::fs).
-/// TODO(Task 3): remove once `list_ios_files`/`ios_download`/`ios_upload`/
-/// `ios_delete` are rewritten to use `run_afcclient` instead of an ifuse mount.
-fn list_mounted_dir(mount_path: &str, sub_path: &str) -> Result<Vec<FileEntry>, String> {
-    let full_path = PathBuf::from(crate::file_ops::join_path(mount_path, sub_path));
-    let normalized_sub_path = crate::file_ops::normalize_path(sub_path);
-    let entries = std::fs::read_dir(&full_path)
-        .map_err(|e| format!("Cannot read {}: {}", full_path.display(), e))?;
-    let mut result = Vec::new();
-    for entry in entries.flatten() {
-        let meta = entry.metadata().map_err(|e| e.to_string())?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        let modified = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs());
-        result.push(FileEntry {
-            path: crate::file_ops::join_path(&normalized_sub_path, &name),
-            name,
-            is_dir: meta.is_dir(),
-            size: meta.len(),
-            modified,
-        });
-    }
-    Ok(result)
-}
-
 fn run_idevice(bin_name: &str, args: &[&str]) -> Result<std::process::Output, String> {
     let bin = crate::bin_path::resolve(bin_name)?;
     std::process::Command::new(bin)
@@ -233,118 +199,84 @@ pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
 
 #[tauri::command]
 pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Result<Vec<FileEntry>, String> {
-    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    check_ios_trusted(&device_id)?;
     let safe_path = crate::file_ops::sanitize_relative_path(&path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    list_mounted_dir(&mount_path, &safe_path)
+    let remote_dir = documents_path(&safe_path);
+
+    let out = run_afcclient(&device_id, &bundle_id, &["ls", &remote_dir])?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(afc_error_message(&stderr, &bundle_id));
+    }
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let names = parse_afcclient_ls(&text);
+
+    let mut result = Vec::new();
+    for name in names {
+        let entry_remote_path = crate::file_ops::join_path(&remote_dir, &name);
+        let info_out = run_afcclient(&device_id, &bundle_id, &["info", &entry_remote_path])?;
+        let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+        let info = parse_afcclient_info(&info_text).unwrap_or(AfcFileInfo {
+            is_dir: false,
+            size: 0,
+            modified: None,
+        });
+        let entry_ui_path = crate::file_ops::join_path(&safe_path, &name);
+        result.push(FileEntry {
+            path: entry_ui_path,
+            name,
+            is_dir: info.is_dir,
+            size: info.size,
+            modified: info.modified,
+        });
+    }
+    Ok(result)
 }
 
 /// Not a #[tauri::command] — called internally by transfer_queue only.
 pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
-    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    let src = PathBuf::from(crate::file_ops::join_path(&mount_path, &safe_remote));
-    std::fs::copy(&src, &local_path).map_err(|e| e.to_string())?;
-    Ok(())
+    let remote = documents_path(&safe_remote);
+    let out = run_afcclient(&device_id, &bundle_id, &["get", &remote, &local_path])?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(afc_error_message(&stderr, &bundle_id))
+    }
 }
 
 /// Not a #[tauri::command] — called internally by transfer_queue only.
 pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remote_path: String) -> Result<(), String> {
-    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    let dst = PathBuf::from(crate::file_ops::join_path(&mount_path, &safe_remote));
-    if let Some(parent) = dst.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    let remote = documents_path(&safe_remote);
+    let out = run_afcclient(&device_id, &bundle_id, &["put", &local_path, &remote])?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(afc_error_message(&stderr, &bundle_id))
     }
-    std::fs::copy(&local_path, &dst).map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 #[tauri::command]
 pub fn ios_delete(device_id: String, bundle_id: String, remote_path: String) -> Result<(), String> {
-    let mount_path = mount_ios_container(&device_id, &bundle_id)?;
+    check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    let target = PathBuf::from(crate::file_ops::join_path(&mount_path, &safe_remote));
-    if target.is_dir() {
-        std::fs::remove_dir_all(&target).map_err(|e| e.to_string())?;
+    let remote = documents_path(&safe_remote);
+    let out = run_afcclient(&device_id, &bundle_id, &["rm", "-rf", &remote])?;
+    if out.status.success() {
+        Ok(())
     } else {
-        std::fs::remove_file(&target).map_err(|e| e.to_string())?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(afc_error_message(&stderr, &bundle_id))
     }
-    Ok(())
-}
-
-/// Explicitly unmount a container, e.g. when the user switches to a different app
-/// or the device disconnects. Safe to call even if not currently mounted.
-#[tauri::command]
-pub fn ios_unmount_container(device_id: String, bundle_id: String) -> Result<(), String> {
-    let key = format!("{}:{}", device_id, bundle_id);
-    let mut guard = MOUNTS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-    if let Some(mount_path) = map.remove(&key) {
-        let _ = std::process::Command::new("umount").arg(&mount_path).status();
-    }
-    Ok(())
-}
-
-/// Mount an iOS app container via ifuse, returning the mount path.
-/// Reuses an existing mount for the same device+bundle if already mounted.
-/// Checks trust state first so a disconnected/untrusted device produces the
-/// same clear "待信任/未授权" error used elsewhere, instead of a raw
-/// "ifuse mount failed" message with no actionable cause.
-fn mount_ios_container(device_id: &str, bundle_id: &str) -> Result<String, String> {
-    let key = format!("{}:{}", device_id, bundle_id);
-    let mut guard = MOUNTS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-
-    if let Some(existing) = map.get(&key) {
-        return Ok(existing.clone());
-    }
-    drop(guard);
-
-    check_ios_trusted(device_id)?;
-
-    let mut guard = MOUNTS.lock().unwrap();
-    let map = guard.get_or_insert_with(HashMap::new);
-
-    // Re-check: another thread may have mounted while we were checking trust.
-    if let Some(existing) = map.get(&key) {
-        return Ok(existing.clone());
-    }
-
-    let mount_path = std::env::temp_dir()
-        .join("x-explorer")
-        .join(device_id)
-        .join(bundle_id);
-    std::fs::create_dir_all(&mount_path).map_err(|e| e.to_string())?;
-    let mount_path_str = mount_path
-        .to_str()
-        .ok_or_else(|| "挂载路径包含无效字符".to_string())?;
-    let ifuse = crate::bin_path::resolve("ifuse")?;
-    let args = ifuse_args(device_id, bundle_id, mount_path_str);
-    let status = std::process::Command::new(ifuse)
-        .args(&args)
-        .status()
-        .map_err(|e| e.to_string())?;
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&mount_path);
-        return Err(format!("挂载应用容器失败: {}", bundle_id));
-    }
-
-    let path_str = mount_path.to_string_lossy().to_string();
-    map.insert(key, path_str.clone());
-    Ok(path_str)
-}
-
-/// Builds the ifuse argv for mounting a container: --udid, --container, and the mount path.
-fn ifuse_args(device_id: &str, bundle_id: &str, mount_path: &str) -> Vec<String> {
-    vec![
-        "--udid".to_string(), device_id.to_string(),
-        "--container".to_string(), bundle_id.to_string(),
-        mount_path.to_string(),
-    ]
 }
 
 #[cfg(test)]
@@ -412,21 +344,6 @@ mod tests {
     fn test_parse_file_sharing_enabled_ids_empty_output() {
         let ids = parse_file_sharing_enabled_ids("");
         assert_eq!(ids.len(), 0);
-    }
-
-    #[test]
-    fn test_ifuse_args_builds_expected_argv() {
-        let args = ifuse_args("udid123", "com.example.app", "/tmp/x-explorer/udid123/com.example.app");
-        assert_eq!(
-            args,
-            vec![
-                "--udid".to_string(),
-                "udid123".to_string(),
-                "--container".to_string(),
-                "com.example.app".to_string(),
-                "/tmp/x-explorer/udid123/com.example.app".to_string(),
-            ]
-        );
     }
 
     #[test]
