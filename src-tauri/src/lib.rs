@@ -11,8 +11,11 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            use tauri::Manager;
             let handle = app.handle().clone();
             device_manager::start(handle);
+            let queue = crate::transfer_queue::TransferQueue::new(app.handle().clone(), 3);
+            app.manage(queue);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
