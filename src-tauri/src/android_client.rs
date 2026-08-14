@@ -95,6 +95,30 @@ pub fn is_not_debuggable_error(stderr: &str) -> bool {
     stderr.contains("not debuggable") || stderr.contains("run-as: Package")
 }
 
+/// If a run-as command's stderr indicates the target app isn't debuggable,
+/// returns the user-facing error message for it. Returns None otherwise.
+fn not_debuggable_error(stderr: &str) -> Option<String> {
+    if is_not_debuggable_error(stderr) {
+        Some("该应用未开启调试模式，无法访问其数据目录".to_string())
+    } else {
+        None
+    }
+}
+
+/// Builds the adb shell argv for a command, wrapping it in `run-as <pkg>` when
+/// `package` is Some, or running it plain when None. Returns the args that come
+/// after "-s" "<device_id>" "shell".
+fn shell_args(package: &Option<String>, cmd: &[&str]) -> Vec<String> {
+    match package {
+        Some(pkg) => {
+            let mut v = vec!["run-as".to_string(), pkg.clone()];
+            v.extend(cmd.iter().map(|s| s.to_string()));
+            v
+        }
+        None => cmd.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
 /// Whether a path falls under the app-container namespace and therefore needs run-as.
 pub fn requires_run_as(path: &str) -> bool {
     path.starts_with("/data/data/") || path.starts_with("/data/user/")
@@ -165,23 +189,15 @@ pub fn list_android_files(
         Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &path),
         None => crate::file_ops::normalize_path(&path),
     };
-    let args: Vec<String> = match &package {
-        Some(pkg) => vec![
-            "-s".into(), device_id.clone(), "shell".into(),
-            "run-as".into(), pkg.clone(), "ls".into(), "-la".into(), full_path.clone(),
-        ],
-        None => vec![
-            "-s".into(), device_id.clone(), "shell".into(),
-            "ls".into(), "-la".into(), full_path.clone(),
-        ],
-    };
+    let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
+    args.extend(shell_args(&package, &["ls", "-la", &full_path]));
     let out = std::process::Command::new(adb)
         .args(&args)
         .output()
         .map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if package.is_some() && is_not_debuggable_error(&stderr) {
-        return Err("该应用未开启调试模式，无法访问其数据目录".to_string());
+    if let Some(err) = not_debuggable_error(&stderr) {
+        return Err(err);
     }
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     Ok(parse_adb_ls(&text, &full_path))
@@ -213,13 +229,15 @@ pub fn android_download(
             if status.success() { Ok(()) } else { Err("adb pull failed".to_string()) }
         }
         Some(pkg) => {
+            let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
+            args.extend(shell_args(&Some(pkg), &["cat", &remote_path]));
             let out = std::process::Command::new(&adb)
-                .args(["-s", &device_id, "shell", "run-as", &pkg, "cat", &remote_path])
+                .args(&args)
                 .output()
                 .map_err(|e| e.to_string())?;
             let stderr = String::from_utf8_lossy(&out.stderr);
-            if is_not_debuggable_error(&stderr) {
-                return Err("该应用未开启调试模式，无法访问其数据目录".to_string());
+            if let Some(err) = not_debuggable_error(&stderr) {
+                return Err(err);
             }
             std::fs::write(&local_path, &out.stdout).map_err(|e| e.to_string())?;
             Ok(())
@@ -269,20 +287,22 @@ pub fn android_upload(
                 return Err("adb push to staging area failed".to_string());
             }
 
+            let mut cp_args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
+            cp_args.extend(shell_args(&Some(pkg.clone()), &["cp", &staging_path, &remote_path]));
             let cp_out = std::process::Command::new(&adb)
-                .args(["-s", &device_id, "shell", "run-as", &pkg, "cp", &staging_path, &remote_path])
+                .args(&cp_args)
                 .output()
                 .map_err(|e| e.to_string())?;
             let stderr = String::from_utf8_lossy(&cp_out.stderr);
-            let not_debuggable = is_not_debuggable_error(&stderr);
+            let not_debuggable_err = not_debuggable_error(&stderr);
 
             // Always clean up the staged file regardless of cp outcome.
             let _ = std::process::Command::new(&adb)
                 .args(["-s", &device_id, "shell", "rm", "-f", &staging_path])
                 .status();
 
-            if not_debuggable {
-                return Err("该应用未开启调试模式，无法访问其数据目录".to_string());
+            if let Some(err) = not_debuggable_err {
+                return Err(err);
             }
             if !cp_out.status.success() {
                 return Err("run-as cp failed".to_string());
@@ -304,23 +324,15 @@ pub fn android_delete(
         Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &remote_path),
         None => crate::file_ops::normalize_path(&remote_path),
     };
-    let args: Vec<String> = match &package {
-        Some(pkg) => vec![
-            "-s".into(), device_id.clone(), "shell".into(),
-            "run-as".into(), pkg.clone(), "rm".into(), "-rf".into(), remote_path.clone(),
-        ],
-        None => vec![
-            "-s".into(), device_id.clone(), "shell".into(),
-            "rm".into(), "-rf".into(), remote_path.clone(),
-        ],
-    };
+    let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
+    args.extend(shell_args(&package, &["rm", "-rf", &remote_path]));
     let out = std::process::Command::new(&adb)
         .args(&args)
         .output()
         .map_err(|e| e.to_string())?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    if package.is_some() && is_not_debuggable_error(&stderr) {
-        return Err("该应用未开启调试模式，无法访问其数据目录".to_string());
+    if let Some(err) = not_debuggable_error(&stderr) {
+        return Err(err);
     }
     if out.status.success() { Ok(()) } else { Err("rm failed".to_string()) }
 }
@@ -398,5 +410,42 @@ mod tests {
     #[test]
     fn test_pkg_root_format() {
         assert_eq!(pkg_root("com.example.app"), "/data/data/com.example.app");
+    }
+
+    #[test]
+    fn test_shell_args_wraps_with_run_as_when_package_present() {
+        let package = Some("com.example.app".to_string());
+        let args = shell_args(&package, &["ls", "-la", "/data/data/com.example.app"]);
+        assert_eq!(
+            args,
+            vec![
+                "run-as".to_string(),
+                "com.example.app".to_string(),
+                "ls".to_string(),
+                "-la".to_string(),
+                "/data/data/com.example.app".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_shell_args_plain_when_no_package() {
+        let package: Option<String> = None;
+        let args = shell_args(&package, &["ls", "-la", "/sdcard"]);
+        assert_eq!(
+            args,
+            vec!["ls".to_string(), "-la".to_string(), "/sdcard".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_not_debuggable_error_returns_message_when_detected() {
+        let err = not_debuggable_error("run-as: Package 'com.example.app' is not debuggable\n");
+        assert_eq!(err, Some("该应用未开启调试模式，无法访问其数据目录".to_string()));
+    }
+
+    #[test]
+    fn test_not_debuggable_error_returns_none_when_not_detected() {
+        assert_eq!(not_debuggable_error("total 24\n"), None);
     }
 }
