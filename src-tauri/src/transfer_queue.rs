@@ -20,6 +20,25 @@ struct Job {
     op: JobOp,
 }
 
+/// RAII guard that decrements `running_count` when dropped, ensuring the counter
+/// is decremented on every exit path from `run_job` (normal return, early return
+/// on cancellation, or panic) without needing an explicit decrement at each site.
+struct RunningCountGuard<'a> {
+    count: &'a Arc<Mutex<usize>>,
+}
+
+impl Drop for RunningCountGuard<'_> {
+    fn drop(&mut self) {
+        let mut count = self.count.lock().unwrap();
+        *count = count.saturating_sub(1);
+    }
+}
+
+/// Returns true if the task with `id` is present in `tasks` and marked "cancelled".
+fn is_cancelled(tasks: &HashMap<String, TransferTask>, id: &str) -> bool {
+    tasks.get(id).map(|t| t.status.as_str()) == Some("cancelled")
+}
+
 pub struct TransferQueue {
     tasks: Arc<Mutex<HashMap<String, TransferTask>>>,
     pending: Arc<(Mutex<VecDeque<Job>>, Condvar)>,
@@ -62,13 +81,18 @@ impl TransferQueue {
 
         {
             let mut tasks = self.tasks.lock().unwrap();
-            if tasks.get(&task.id).map(|t| t.status.as_str()) == Some("cancelled") {
+            if is_cancelled(&tasks, &task.id) {
                 return;
             }
             task.status = "running".to_string();
             tasks.insert(task.id.clone(), task.clone());
         }
         emit_progress(handle, &task);
+
+        // Counted for the duration of the blocking transfer call only; the guard below
+        // decrements on every exit path (normal completion, error, or mid-flight cancellation).
+        *self.running_count.lock().unwrap() += 1;
+        let _guard = RunningCountGuard { count: &self.running_count };
 
         let result = match &op {
             JobOp::IosDownload { device_id, bundle_id, remote_path, local_path } =>
@@ -84,7 +108,7 @@ impl TransferQueue {
         let mut tasks = self.tasks.lock().unwrap();
         // A cancellation requested mid-flight still lands here after the blocking call returns;
         // respect it instead of overwriting with a success/error status.
-        if tasks.get(&task.id).map(|t| t.status.as_str()) == Some("cancelled") {
+        if is_cancelled(&tasks, &task.id) {
             drop(tasks);
             emit_progress(handle, &task);
             return;
@@ -231,6 +255,14 @@ pub fn enqueue_android_upload(
 mod tests {
     use super::*;
 
+    // NOTE: `TransferQueue::new` requires a real `tauri::AppHandle`, and this crate does not
+    // depend on `tauri::test` utilities (mock_app / MockRuntime) anywhere else. Adding that
+    // dependency just to exercise `TransferQueue::enqueue`/`cancel` end-to-end was judged not
+    // worth it per review guidance, so the tests below continue to exercise the underlying
+    // `HashMap<String, TransferTask>` state transitions directly instead of a real queue
+    // instance. `is_cancelled` and the running-count guard, which don't need an `AppHandle`,
+    // are tested directly below.
+
     fn noop_job() -> JobOp {
         JobOp::AndroidDownload {
             device_id: "nonexistent".to_string(),
@@ -284,5 +316,58 @@ mod tests {
     #[test]
     fn test_job_op_variants_construct() {
         let _ = noop_job();
+    }
+
+    #[test]
+    fn test_is_cancelled_true_when_status_cancelled() {
+        let mut tasks: HashMap<String, TransferTask> = HashMap::new();
+        let id = "task-cancelled".to_string();
+        tasks.insert(
+            id.clone(),
+            TransferTask {
+                id: id.clone(),
+                kind: "download".to_string(),
+                src: "/device/file.txt".to_string(),
+                dst: "/local/file.txt".to_string(),
+                total_bytes: 1,
+                transferred_bytes: 0,
+                status: "cancelled".to_string(),
+                error: None,
+            },
+        );
+        assert!(is_cancelled(&tasks, &id));
+    }
+
+    #[test]
+    fn test_is_cancelled_false_when_status_running_or_missing() {
+        let mut tasks: HashMap<String, TransferTask> = HashMap::new();
+        let id = "task-running".to_string();
+        tasks.insert(
+            id.clone(),
+            TransferTask {
+                id: id.clone(),
+                kind: "download".to_string(),
+                src: "/device/file.txt".to_string(),
+                dst: "/local/file.txt".to_string(),
+                total_bytes: 1,
+                transferred_bytes: 0,
+                status: "running".to_string(),
+                error: None,
+            },
+        );
+        assert!(!is_cancelled(&tasks, &id));
+        assert!(!is_cancelled(&tasks, "nonexistent-id"));
+    }
+
+    #[test]
+    fn test_running_count_guard_decrements_on_drop() {
+        let running_count: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
+        *running_count.lock().unwrap() += 1;
+        assert_eq!(*running_count.lock().unwrap(), 1);
+        {
+            let _guard = RunningCountGuard { count: &running_count };
+            assert_eq!(*running_count.lock().unwrap(), 1);
+        }
+        assert_eq!(*running_count.lock().unwrap(), 0);
     }
 }
