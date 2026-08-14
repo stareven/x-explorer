@@ -148,7 +148,8 @@ pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
         &["-u", &device_id, "list", "-a", "CFBundleIdentifier", "-a", "UIFileSharingEnabled"],
     )?;
     let sharing_text = String::from_utf8_lossy(&sharing_out.stdout).to_string();
-    let enabled_ids = parse_file_sharing_enabled_ids(&sharing_text);
+    let enabled_ids: std::collections::HashSet<String> =
+        parse_file_sharing_enabled_ids(&sharing_text).into_iter().collect();
 
     let list_out = run_idevice("ideviceinstaller", &["-u", &device_id, "-l"])?;
     let list_text = String::from_utf8_lossy(&list_out.stdout).to_string();
