@@ -17,19 +17,27 @@ export function AppList() {
       setApps([]);
       return;
     }
+    let cancelled = false;
     const load = async () => {
       try {
         const list =
           device.platform === "ios"
             ? await tauriApi.listIosApps(device.id)
             : await tauriApi.listAndroidApps(device.id);
-        setApps(list);
+        if (!cancelled) {
+          setApps(list);
+        }
       } catch (e) {
         console.error("Failed to load apps:", e);
-        setApps([]);
+        if (!cancelled) {
+          setApps([]);
+        }
       }
     };
     load();
+    return () => {
+      cancelled = true;
+    };
   }, [device, isUsable]);
 
   if (!device) return null;
