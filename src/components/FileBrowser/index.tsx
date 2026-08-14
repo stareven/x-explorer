@@ -27,21 +27,31 @@ export function FileBrowser() {
 
   useTransferListener();
 
-  async function reloadFiles() {
+  async function reloadFiles(isCancelled: () => boolean = () => false) {
     if (!device || !browseTarget) return;
     try {
       const list =
         device.platform === "ios"
           ? await tauriApi.listIosFiles(device.id, pkg!, currentPath)
           : await tauriApi.listAndroidFiles(device.id, currentPath, pkg);
-      setFiles(list);
+      if (!isCancelled()) {
+        setFiles(list);
+      }
     } catch (e) {
       console.error("Failed to load files:", e);
     }
   }
 
   useEffect(() => {
-    reloadFiles().then(clearSelection);
+    let cancelled = false;
+    reloadFiles(() => cancelled).then(() => {
+      if (!cancelled) {
+        clearSelection();
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, browseTarget, currentPath]);
 
