@@ -25,7 +25,7 @@ export function AppList() {
             ? await tauriApi.listIosApps(device.id)
             : await tauriApi.listAndroidApps(device.id);
         if (!cancelled) {
-          setApps(list);
+          setApps(list.sort((a, b) => a.name.localeCompare(b.name)));
         }
       } catch (e) {
         console.error("Failed to load apps:", e);
