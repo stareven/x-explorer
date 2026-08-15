@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileEntry, parentPath, useStore } from "../../store";
 import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
@@ -40,6 +40,13 @@ export function FileBrowser() {
   useTransferListener();
   useIosFileInfoListener();
 
+  // Latest-call-wins guard for async reloads: each reloadFiles call bumps the
+  // sequence and discards older in-flight results. Covers both navigation
+  // (effect cleanup bumps) and manual refresh — previously the refresh path
+  // had no canceller, so its late-arriving listing could overwrite the
+  // freshly navigated-to directory's files.
+  const reloadSeq = useRef(0);
+
   function sleep(ms: number) {
     return new Promise((r) => setTimeout(r, ms));
   }
@@ -50,16 +57,15 @@ export function FileBrowser() {
       : tauriApi.listAndroidFiles(device!.id, currentPath, pkg);
   }
 
-  async function reloadFiles(
-    isCancelled: () => boolean = () => false,
-    opts: { useCache?: boolean } = { useCache: true }
-  ) {
+  async function reloadFiles(opts: { useCache?: boolean } = { useCache: true }) {
     if (!device || !browseTarget) return;
+    const mySeq = ++reloadSeq.current;
+    const isStale = () => mySeq !== reloadSeq.current;
     const key = cacheKey(device.platform, device.id, pkg, currentPath);
     // Serve cached entries immediately so revisiting a directory is instant;
     // the fresh fetch below replaces them once it lands.
     const cached = opts.useCache ? listCache.get(key) : undefined;
-    if (cached && !isCancelled()) {
+    if (cached && !isStale()) {
       setFiles(cached);
       enqueueMissingIosInfo(cached);
     }
@@ -72,7 +78,7 @@ export function FileBrowser() {
         return null;
       })
     );
-    if (list && !isCancelled()) {
+    if (list && !isStale()) {
       // Fresh iOS entries carry placeholder metadata (is_dir:false, no
       // size/mtime) until probed. Replace each placeholder with the
       // already-probed metadata from cache when the entry existed before —
@@ -104,13 +110,16 @@ export function FileBrowser() {
 
   useEffect(() => {
     let cancelled = false;
-    reloadFiles(() => cancelled).then(() => {
+    reloadFiles().then(() => {
       if (!cancelled) {
         clearSelection();
       }
     });
     return () => {
       cancelled = true;
+      // Invalidate any in-flight reload from this directory so its late
+      // result never overwrites the newly navigated-to directory's files.
+      reloadSeq.current++;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, browseTarget, currentPath]);
@@ -146,7 +155,7 @@ export function FileBrowser() {
   function handleRefresh() {
     if (!device || !browseTarget) return;
     listCache.delete(cacheKey(device.platform, device.id, pkg, currentPath));
-    reloadFiles(undefined, { useCache: false });
+    reloadFiles({ useCache: false });
   }
 
   async function handleImport() {

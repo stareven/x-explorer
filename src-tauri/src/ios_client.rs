@@ -114,6 +114,62 @@ pub fn parse_afcclient_info(output: &str) -> Option<AfcFileInfo> {
     Some(AfcFileInfo { is_dir, size, modified })
 }
 
+/// Parse `afcclient ... ls -l <path>` stdout into (name, info) pairs, so one
+/// subprocess call yields every entry's type/size/mtime directly. Format per
+/// line (ls-style, name may contain spaces):
+///   drwxr-xr-x    2 mobile mobile         64 10 Dec 2024 23:42:40 .Trash
+/// Lines whose metadata can't be parsed degrade to a placeholder
+/// (`is_dir: false, size: 0, modified: None`) so the frontend's info-probe
+/// fallback (`enqueue_ios_file_info`) re-fetches just those entries.
+pub fn parse_afcclient_ls_long(output: &str) -> Vec<(String, AfcFileInfo)> {
+    let placeholder = || AfcFileInfo { is_dir: false, size: 0, modified: None };
+    output
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // 9 metadata fields (perms nlink owner group size day mon year time)
+            // followed by the file name; rejoin remainder to preserve spaces.
+            if parts.len() < 10 {
+                return (line.trim().to_string(), placeholder());
+            }
+            let name = parts[9..].join(" ");
+            let size = match parts[4].parse::<u64>() {
+                Ok(s) => s,
+                Err(_) => return (name, placeholder()),
+            };
+            let modified = parse_ls_time(parts[5], parts[6], parts[7], parts[8]);
+            let is_dir = parts[0].starts_with('d');
+            (name, AfcFileInfo { is_dir, size, modified })
+        })
+        .collect()
+}
+
+/// "10", "Dec", "2024", "23:42:40" -> naive unix seconds (UTC-assumed; afcclient
+/// prints device-local time without a zone, and mtime is only used for display
+/// ordering, so a few hours of skew is acceptable). Returns None if malformed.
+fn parse_ls_time(day: &str, month: &str, year: &str, hms: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let month_idx = MONTHS.iter().position(|m| *m == month)?;
+    let day: u64 = day.parse().ok()?;
+    let year: i64 = year.parse().ok()?;
+    let mut hms_parts = hms.split(':');
+    let hour: u64 = hms_parts.next()?.parse().ok()?;
+    let min: u64 = hms_parts.next()?.parse().ok()?;
+    let sec: u64 = hms_parts.next()?.parse().ok()?;
+    // Days since epoch via Howard Hinnant's civil-date algorithm.
+    let y = if month_idx < 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64; // [0, 399]
+    let mp = (month_idx as u64 + 10) % 12; // Mar=0..Feb=11
+    let doy = (153 * mp + 2) / 5 + day - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // days since epoch of era start
+    let days = era as u64 * 146097 + doe - 719468; // shift to unix epoch (1970-01-01)
+    Some(days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
 fn run_idevice(bin_name: &str, args: &[&str]) -> Result<std::process::Output, String> {
     let bin = crate::bin_path::resolve(bin_name)?;
     std::process::Command::new(bin)
@@ -208,13 +264,15 @@ pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
         .collect())
 }
 
-/// Lists file names in a directory without probing each entry's type/size —
-/// that would mean one `afcclient info` subprocess per entry (~1.2s each due
-/// to afcclient's per-invocation startup cost), which made large directories
-/// take minutes to open. Instead, entries come back with placeholder metadata
-/// (`is_dir: false`, `size: 0`, `modified: None`) so the list renders
-/// instantly; the frontend calls `enqueue_ios_file_info` right after to fill
-/// in real metadata asynchronously (see that function's doc comment).
+/// Lists a directory with full metadata via a single `afcclient -- ls -l`
+/// subprocess call (~1.2s), which returns type/size/mtime for every entry at
+/// once — replacing the previous N+1 pattern (plain `ls` + one `info` call
+/// per entry at ~1.2s each), where directory icons only appeared after
+/// N/8 × 1.2s of background probing and concurrent probes occasionally lost
+/// the USB/lockdownd race, leaving folders misclassified as files.
+/// Entries whose `ls -l` line can't be parsed come back with placeholder
+/// metadata (`is_dir: false`, `size: 0`, `modified: None`); the frontend
+/// re-probes just those via `enqueue_ios_file_info`.
 #[tauri::command(async)]
 pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Result<Vec<FileEntry>, String> {
     check_ios_trusted(&device_id)?;
@@ -222,24 +280,23 @@ pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Res
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote_dir = documents_path(&safe_path);
 
-    let out = run_afcclient(&device_id, &bundle_id, &["ls", &remote_dir])?;
+    let out = run_afcclient(&device_id, &bundle_id, &["--", "ls", "-l", &remote_dir])?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(afc_error_message(&stderr, &bundle_id));
     }
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    let names = parse_afcclient_ls(&text);
 
-    Ok(names
+    Ok(parse_afcclient_ls_long(&text)
         .into_iter()
-        .map(|name| {
+        .map(|(name, info)| {
             let entry_ui_path = crate::file_ops::join_path(&safe_path, &name);
             FileEntry {
                 path: entry_ui_path,
                 name,
-                is_dir: false,
-                size: 0,
-                modified: None,
+                is_dir: info.is_dir,
+                size: info.size,
+                modified: info.modified,
             }
         })
         .collect())
@@ -252,13 +309,13 @@ pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Res
 /// dominated by process spawn, not device I/O.
 const FILE_INFO_MAX_CONCURRENCY: usize = 8;
 
-/// Kicks off a background probe of each path's real metadata (type/size/
+/// Fallback metadata probe: re-fetches individual paths' metadata (type/size/
 /// mtime) via `afcclient info`, bounded to `FILE_INFO_MAX_CONCURRENCY`
-/// concurrent subprocesses. Returns immediately; each entry's result is
-/// pushed to the frontend individually via an `ios-file-info-ready` event
-/// as soon as it's ready, rather than waiting for the whole batch — so the
-/// UI can patch in real icons/sizes progressively instead of blocking on
-/// the slowest entry.
+/// concurrent subprocesses. The primary path is `ls -l` in `list_ios_files`,
+/// which returns metadata for all entries in one call; only entries whose
+/// `ls -l` line failed to parse (placeholder `modified: None`) get enqueued
+/// here. Returns immediately; each entry's result is pushed to the frontend
+/// individually via an `ios-file-info-ready` event as soon as it's ready.
 #[tauri::command]
 pub fn enqueue_ios_file_info(
     app: tauri::AppHandle,
@@ -485,6 +542,45 @@ mod tests {
     #[test]
     fn test_parse_afcclient_info_invalid_json_returns_none() {
         assert!(parse_afcclient_info("not json").is_none());
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_long_dir_and_file_with_spaces() {
+        let output = "-rw-r--r--    1 mobile mobile    3067147 10 Nov 2024 19:18:47 Blank 2.pages\ndrwxr-xr-x    2 mobile mobile         64 10 Dec 2024 23:42:40 .Trash\n";
+        let entries = parse_afcclient_ls_long(output);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, "Blank 2.pages");
+        assert!(!entries[0].1.is_dir);
+        assert_eq!(entries[0].1.size, 3067147);
+        assert_eq!(entries[0].1.modified, Some(1731266327));
+        assert_eq!(entries[1].0, ".Trash");
+        assert!(entries[1].1.is_dir);
+        assert_eq!(entries[1].1.size, 64);
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_long_falls_back_to_placeholder_on_bad_size() {
+        let output = "drwxr-xr-x    2 mobile mobile    notanumber 10 Dec 2024 23:42:40 dir\n";
+        let entries = parse_afcclient_ls_long(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "dir");
+        // Unparseable metadata degrades to placeholder so the frontend's
+        // info-probe fallback re-fetches it.
+        assert!(!entries[0].1.is_dir);
+        assert_eq!(entries[0].1.size, 0);
+        assert_eq!(entries[0].1.modified, None);
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_long_empty() {
+        assert_eq!(parse_afcclient_ls_long("").len(), 0);
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_long_symlink_is_not_dir() {
+        let output = "lrwxr-xr-x    1 mobile mobile        11 01 Jan 2025 00:00:00 link\n";
+        let entries = parse_afcclient_ls_long(output);
+        assert!(!entries[0].1.is_dir);
     }
 
     #[test]
