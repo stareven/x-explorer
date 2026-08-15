@@ -41,7 +41,7 @@ The Rust backend does NOT link against libimobiledevice or adb libraries. Instea
 | `afcclient` | All iOS app file ops via `--documents <bundle_id>` (ls, info, get, put, rm) |
 | `adb` | All Android operations |
 
-`bin_path.rs` resolves binary paths — checks `src-tauri/binaries/` (dev) or the app bundle's Resources dir (production). The `tauri.conf.json` `bundle.resources` glob (`binaries/*`) ensures they ship inside the .app.
+`bin_path.rs` resolves binary paths — checks `src-tauri/binaries/` (dev) or the app bundle's Resources dir (production) first, then falls back to the system PATH; if still missing, the error message includes the Homebrew install command (`libimobiledevice` / `ideviceinstaller` / `android-platform-tools`). The `tauri.conf.json` `bundle.resources` glob (`binaries/*`) ensures they ship inside the .app.
 
 ### Rust module responsibilities
 
