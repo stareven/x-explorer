@@ -42,3 +42,14 @@ pub struct TransferProgress {
     pub total_bytes: u64,
     pub status: String,
 }
+
+/// Emitted once per file after `enqueue_ios_file_info` finishes probing it via
+/// `afcclient info`. `path` matches the `FileEntry.path` the frontend already
+/// has, so it can be looked up and patched in place.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IosFileInfoReady {
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub modified: Option<u64>,
+}

@@ -1,13 +1,23 @@
 import { useEffect } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { useStore } from "../../store";
-import { tauriApi, useTransferListener } from "../../hooks/useTauri";
+import { FileEntry, parentPath, useStore } from "../../store";
+import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { Toolbar } from "./Toolbar";
 import { FileList } from "./FileList";
 import { FileGrid } from "./FileGrid";
 import { useSelection } from "./useSelection";
-import { useDragDrop } from "./useDragDrop";
+import { useFileDrop } from "./useFileDrop";
+
+// Stale-while-revalidate directory listing cache: revisiting a previously
+// browsed path renders the cached entries instantly while a fresh listing is
+// fetched in the background to replace them. Keyed by device + browse
+// target + path so switching device/app never serves wrong entries.
+const listCache = new Map<string, FileEntry[]>();
+
+function cacheKey(platform: string, deviceId: string, pkg: string | undefined, path: string) {
+  return `${platform}:${deviceId}:${pkg ?? "-"}:${path}`;
+}
 
 export function FileBrowser() {
   const selectedDeviceId = useStore((s) => s.selectedDeviceId);
@@ -16,29 +26,79 @@ export function FileBrowser() {
   const currentPath = useStore((s) => s.currentPath);
   const files = useStore((s) => s.files);
   const setFiles = useStore((s) => s.setFiles);
-  const setCurrentPath = useStore((s) => s.setCurrentPath);
+  const navigate = useStore((s) => s.navigate);
+  const goBack = useStore((s) => s.goBack);
+  const navIndex = useStore((s) => s.navIndex);
   const viewMode = useStore((s) => s.viewMode);
 
   const device = devices.find((d) => d.id === selectedDeviceId);
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
   const fileNames = files.map((f) => f.name);
   const { selected, handleClick, selectAll, clearSelection } = useSelection(fileNames);
-  const { startFileDrag, handleDrop, handleDragOver } = useDragDrop();
+  const { handleDrop, handleDragOver } = useFileDrop();
 
   useTransferListener();
+  useIosFileInfoListener();
 
-  async function reloadFiles(isCancelled: () => boolean = () => false) {
+  function sleep(ms: number) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function fetchList() {
+    return device!.platform === "ios"
+      ? tauriApi.listIosFiles(device!.id, pkg!, currentPath)
+      : tauriApi.listAndroidFiles(device!.id, currentPath, pkg);
+  }
+
+  async function reloadFiles(
+    isCancelled: () => boolean = () => false,
+    opts: { useCache?: boolean } = { useCache: true }
+  ) {
     if (!device || !browseTarget) return;
-    try {
-      const list =
-        device.platform === "ios"
-          ? await tauriApi.listIosFiles(device.id, pkg!, currentPath)
-          : await tauriApi.listAndroidFiles(device.id, currentPath, pkg);
-      if (!isCancelled()) {
-        setFiles(list);
-      }
-    } catch (e) {
-      console.error("Failed to load files:", e);
+    const key = cacheKey(device.platform, device.id, pkg, currentPath);
+    // Serve cached entries immediately so revisiting a directory is instant;
+    // the fresh fetch below replaces them once it lands.
+    const cached = opts.useCache ? listCache.get(key) : undefined;
+    if (cached && !isCancelled()) {
+      setFiles(cached);
+      enqueueMissingIosInfo(cached);
+    }
+    // One retry on failure: rapid navigation can spawn several concurrent
+    // afclient/adb subprocesses and occasionally one loses the race for the
+    // USB/lockdownd connection; a short backoff usually recovers it.
+    const list = await fetchList().catch((first) =>
+      sleep(400).then(fetchList).catch((second) => {
+        console.error("Failed to load files:", first, second);
+        return null;
+      })
+    );
+    if (list && !isCancelled()) {
+      // Fresh iOS entries carry placeholder metadata (is_dir:false, no
+      // size/mtime) until probed. Replace each placeholder with the
+      // already-probed metadata from cache when the entry existed before —
+      // otherwise every background refresh would visually flip directories
+      // back to file icons while probes re-run, and a quick navigation away
+      // would persist the placeholders into the cache. Tradeoff: unchanged
+      // files keep their last-known size/mtime; only genuinely new entries
+      // get probed (enqueueMissingIosInfo below).
+      const byPath = new Map((cached ?? []).map((c) => [c.path, c]));
+      const merged = list.map((f) =>
+        f.modified == null ? byPath.get(f.path) ?? f : f
+      );
+      setFiles(merged);
+      listCache.set(key, merged);
+      enqueueMissingIosInfo(merged);
+    }
+  }
+
+  // Probe real metadata only for entries still carrying placeholders
+  // (identified by missing `modified`) — cached entries that were already
+  // probed on a previous visit skip the costly per-file afcclient calls.
+  function enqueueMissingIosInfo(list: FileEntry[]) {
+    if (!device || device.platform !== "ios") return;
+    const needInfo = list.filter((f) => f.modified == null).map((f) => f.path);
+    if (needInfo.length > 0) {
+      tauriApi.enqueueIosFileInfo(device.id, pkg!, needInfo);
     }
   }
 
@@ -55,6 +115,21 @@ export function FileBrowser() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [device, browseTarget, currentPath]);
 
+  // Write probed metadata back into the cache: patchFileInfo updates `files`
+  // in place as iOS probes land, and without this those enriched entries
+  // would be lost on the next visit (forcing a full re-probe). The path
+  // guard prevents caching the previous directory's entries under the new
+  // key during the render that follows a navigation.
+  useEffect(() => {
+    if (!device || !browseTarget || files.length === 0) return;
+    const base = currentPath === "/" ? "" : currentPath.replace(/\/+$/, "");
+    const matchesCurrentDir = files.every((f) => f.path === `${base}/${f.name}`);
+    if (matchesCurrentDir) {
+      listCache.set(cacheKey(device.platform, device.id, pkg, currentPath), files);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "a") {
@@ -65,6 +140,14 @@ export function FileBrowser() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [selectAll]);
+
+  // Manual refresh: drop the cache for the current directory so the reload
+  // neither serves nor merges stale metadata — sizes/mtimes are re-probed.
+  function handleRefresh() {
+    if (!device || !browseTarget) return;
+    listCache.delete(cacheKey(device.platform, device.id, pkg, currentPath));
+    reloadFiles(undefined, { useCache: false });
+  }
 
   async function handleImport() {
     const paths = await open({ multiple: true });
@@ -104,8 +187,7 @@ export function FileBrowser() {
     }
   }
 
-  async function handleDelete() {
-    if (!device || !window.confirm(`删除选中的 ${selected.size} 个文件？`)) return;
+  async function handleDelete() {    if (!device || !window.confirm(`删除选中的 ${selected.size} 个文件？`)) return;
     const selectedFiles = files.filter((f) => selected.has(f.name));
     for (const file of selectedFiles) {
       try {
@@ -158,23 +240,26 @@ export function FileBrowser() {
         onImport={handleImport}
         onExport={handleExport}
         onDelete={handleDelete}
+        canGoBack={navIndex > 0}
+        onBack={goBack}
+        canGoUp={currentPath !== "/"}
+        onUp={() => navigate(parentPath(currentPath))}
+        onRefresh={handleRefresh}
       />
       <div className="flex-1 overflow-auto">
         {viewMode === "list" ? (
           <FileList
             files={files}
             selected={selected}
-            onNavigate={setCurrentPath}
+            onNavigate={navigate}
             onSelect={handleClick}
-            onDragStart={(f) => startFileDrag([f])}
           />
         ) : (
           <FileGrid
             files={files}
             selected={selected}
-            onNavigate={setCurrentPath}
+            onNavigate={navigate}
             onSelect={handleClick}
-            onDragStart={(f) => startFileDrag([f])}
           />
         )}
       </div>

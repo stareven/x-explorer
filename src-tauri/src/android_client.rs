@@ -146,7 +146,7 @@ pub fn check_device_authorized(device_id: &str) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_android_devices() -> Result<Vec<Device>, String> {
     let adb = crate::bin_path::resolve("adb")?;
     let out = std::process::Command::new(adb)
@@ -157,7 +157,7 @@ pub fn list_android_devices() -> Result<Vec<Device>, String> {
     Ok(parse_adb_devices(&text))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_android_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
@@ -177,7 +177,7 @@ pub fn pkg_root(pkg: &str) -> String {
 /// List files. `package` is None for external storage browsing (path is an absolute
 /// /sdcard/... path), Some(pkg) for app-container browsing (path is relative to the
 /// package's data root, e.g. "/" or "/shared_prefs").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_android_files(
     device_id: String,
     path: String,
@@ -318,7 +318,7 @@ pub fn android_upload(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn android_delete(
     device_id: String,
     remote_path: String,

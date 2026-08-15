@@ -9,20 +9,28 @@ pub fn parse_idevice_ids(output: &str) -> Vec<String> {
         .collect()
 }
 
-/// Parse output of `ideviceinstaller -l` into AppInfo list.
-/// Format: CFBundleIdentifier - CFBundleVersion - CFBundleDisplayName
+/// Parse output of `ideviceinstaller list -a CFBundleIdentifier -a
+/// CFBundleDisplayName` into AppInfo list.
+/// Format (CSV-like, header row + `id, "name"` per line):
+///   CFBundleIdentifier, CFBundleDisplayName
+///   com.apple.Pages, "Pages"
 pub fn parse_ideviceinstaller_list(output: &str) -> Vec<AppInfo> {
     output
         .lines()
-        .filter(|line| line.contains(" - "))
+        .skip(1) // header: "CFBundleIdentifier, CFBundleDisplayName"
         .filter_map(|line| {
-            let parts: Vec<&str> = line.splitn(3, " - ").collect();
-            if parts.len() < 3 {
+            let parts: Vec<&str> = line.splitn(2, ',').collect();
+            if parts.len() != 2 {
+                return None;
+            }
+            let bundle_id = parts[0].trim();
+            let name = parts[1].trim().trim_matches('"');
+            if bundle_id.is_empty() {
                 return None;
             }
             Some(AppInfo {
-                bundle_id: parts[0].trim().to_string(),
-                name: parts[2].trim().to_string(),
+                bundle_id: bundle_id.to_string(),
+                name: name.to_string(),
             })
         })
         .collect()
@@ -153,7 +161,7 @@ fn afc_error_message(stderr: &str, bundle_id: &str) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_ios_devices() -> Result<Vec<Device>, String> {
     let out = run_idevice("idevice_id", &["-l"])?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -177,7 +185,7 @@ pub fn list_ios_devices() -> Result<Vec<Device>, String> {
     Ok(devices)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
     let sharing_out = run_idevice(
         "ideviceinstaller",
@@ -187,7 +195,10 @@ pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
     let enabled_ids: std::collections::HashSet<String> =
         parse_file_sharing_enabled_ids(&sharing_text).into_iter().collect();
 
-    let list_out = run_idevice("ideviceinstaller", &["-u", &device_id, "-l"])?;
+    let list_out = run_idevice(
+        "ideviceinstaller",
+        &["-u", &device_id, "list", "-a", "CFBundleIdentifier", "-a", "CFBundleDisplayName"],
+    )?;
     let list_text = String::from_utf8_lossy(&list_out.stdout).to_string();
     let all_apps = parse_ideviceinstaller_list(&list_text);
 
@@ -197,7 +208,14 @@ pub fn list_ios_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
         .collect())
 }
 
-#[tauri::command]
+/// Lists file names in a directory without probing each entry's type/size —
+/// that would mean one `afcclient info` subprocess per entry (~1.2s each due
+/// to afcclient's per-invocation startup cost), which made large directories
+/// take minutes to open. Instead, entries come back with placeholder metadata
+/// (`is_dir: false`, `size: 0`, `modified: None`) so the list renders
+/// instantly; the frontend calls `enqueue_ios_file_info` right after to fill
+/// in real metadata asynchronously (see that function's doc comment).
+#[tauri::command(async)]
 pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Result<Vec<FileEntry>, String> {
     check_ios_trusted(&device_id)?;
     let safe_path = crate::file_ops::sanitize_relative_path(&path)
@@ -212,26 +230,88 @@ pub fn list_ios_files(device_id: String, bundle_id: String, path: String) -> Res
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let names = parse_afcclient_ls(&text);
 
-    let mut result = Vec::new();
-    for name in names {
-        let entry_remote_path = crate::file_ops::join_path(&remote_dir, &name);
-        let info_out = run_afcclient(&device_id, &bundle_id, &["info", &entry_remote_path])?;
-        let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
-        let info = parse_afcclient_info(&info_text).unwrap_or(AfcFileInfo {
-            is_dir: false,
-            size: 0,
-            modified: None,
+    Ok(names
+        .into_iter()
+        .map(|name| {
+            let entry_ui_path = crate::file_ops::join_path(&safe_path, &name);
+            FileEntry {
+                path: entry_ui_path,
+                name,
+                is_dir: false,
+                size: 0,
+                modified: None,
+            }
+        })
+        .collect())
+}
+
+/// Max concurrent `afcclient info` subprocesses spawned by
+/// `enqueue_ios_file_info`. Bounded to avoid overwhelming the single
+/// USB/lockdownd connection with too many simultaneous processes; 8 is a
+/// conservative starting point given each call's ~1.2s startup overhead is
+/// dominated by process spawn, not device I/O.
+const FILE_INFO_MAX_CONCURRENCY: usize = 8;
+
+/// Kicks off a background probe of each path's real metadata (type/size/
+/// mtime) via `afcclient info`, bounded to `FILE_INFO_MAX_CONCURRENCY`
+/// concurrent subprocesses. Returns immediately; each entry's result is
+/// pushed to the frontend individually via an `ios-file-info-ready` event
+/// as soon as it's ready, rather than waiting for the whole batch — so the
+/// UI can patch in real icons/sizes progressively instead of blocking on
+/// the slowest entry.
+#[tauri::command]
+pub fn enqueue_ios_file_info(
+    app: tauri::AppHandle,
+    device_id: String,
+    bundle_id: String,
+    paths: Vec<String>,
+) {
+    use tauri::Emitter;
+    std::thread::spawn(move || {
+        let semaphore = std::sync::Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+        std::thread::scope(|scope| {
+            for path in paths {
+                let device_id = &device_id;
+                let bundle_id = &bundle_id;
+                let app = &app;
+                let semaphore = semaphore.clone();
+                // Acquire a slot: block until fewer than FILE_INFO_MAX_CONCURRENCY
+                // probes are in flight.
+                {
+                    let (lock, cvar) = &*semaphore;
+                    let mut in_flight = lock.lock().unwrap();
+                    while *in_flight >= FILE_INFO_MAX_CONCURRENCY {
+                        in_flight = cvar.wait(in_flight).unwrap();
+                    }
+                    *in_flight += 1;
+                }
+                scope.spawn(move || {
+                    let safe_path = crate::file_ops::sanitize_relative_path(&path);
+                    if let Some(safe_path) = safe_path {
+                        let remote_path = documents_path(&safe_path);
+                        if let Ok(info_out) = run_afcclient(device_id, bundle_id, &["info", &remote_path]) {
+                            let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+                            if let Some(info) = parse_afcclient_info(&info_text) {
+                                let _ = app.emit(
+                                    "ios-file-info-ready",
+                                    crate::types::IosFileInfoReady {
+                                        path,
+                                        is_dir: info.is_dir,
+                                        size: info.size,
+                                        modified: info.modified,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    // Release the slot and wake one waiter, if any.
+                    let (lock, cvar) = &*semaphore;
+                    *lock.lock().unwrap() -= 1;
+                    cvar.notify_one();
+                });
+            }
         });
-        let entry_ui_path = crate::file_ops::join_path(&safe_path, &name);
-        result.push(FileEntry {
-            path: entry_ui_path,
-            name,
-            is_dir: info.is_dir,
-            size: info.size,
-            modified: info.modified,
-        });
-    }
-    Ok(result)
+    });
 }
 
 /// Not a #[tauri::command] — called internally by transfer_queue only.
@@ -264,19 +344,45 @@ pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remo
     }
 }
 
-#[tauri::command]
+/// afcclient's one-shot `rm` has no recursive flag and — worse — reports
+/// failures (e.g. "Directory not empty") on *stdout* with exit code 0, so
+/// success must be detected by the absence of an "Error:" prefix in stdout
+/// rather than via `status.success()` alone.
+fn afc_remove(device_id: &str, bundle_id: &str, remote: &str) -> Result<(), String> {
+    let out = run_afcclient(device_id, bundle_id, &["rm", remote])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() || stdout.contains("Error:") {
+        Err(afc_error_message(stdout.trim(), bundle_id))
+    } else {
+        Ok(())
+    }
+}
+
+/// Depth-first recursive delete: `info` tells us whether `remote` is a
+/// directory; if so, `ls` it, recurse into every entry, then remove the
+/// now-empty directory itself. Files are removed directly.
+fn afc_remove_recursive(device_id: &str, bundle_id: &str, remote: &str) -> Result<(), String> {
+    let info_out = run_afcclient(device_id, bundle_id, &["info", remote])?;
+    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+    if let Some(info) = parse_afcclient_info(&info_text) {
+        if info.is_dir {
+            let ls_out = run_afcclient(device_id, bundle_id, &["ls", remote])?;
+            let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
+            for name in parse_afcclient_ls(&ls_text) {
+                let child = crate::file_ops::join_path(remote, &name);
+                afc_remove_recursive(device_id, bundle_id, &child)?;
+            }
+        }
+    }
+    afc_remove(device_id, bundle_id, remote)
+}
+
+#[tauri::command(async)]
 pub fn ios_delete(device_id: String, bundle_id: String, remote_path: String) -> Result<(), String> {
     check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    let remote = documents_path(&safe_remote);
-    let out = run_afcclient(&device_id, &bundle_id, &["rm", "-rf", &remote])?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        Err(afc_error_message(&stderr, &bundle_id))
-    }
+    afc_remove_recursive(&device_id, &bundle_id, &documents_path(&safe_remote))
 }
 
 #[cfg(test)]
@@ -299,7 +405,7 @@ mod tests {
 
     #[test]
     fn test_parse_ideviceinstaller_list() {
-        let output = "com.example.myapp - 1.0.0 - My App\ncom.foo.bar - 2.1 - Foo Bar\n";
+        let output = "CFBundleIdentifier, CFBundleDisplayName\ncom.example.myapp, \"My App\"\ncom.foo.bar, \"Foo Bar\"\n";
         let apps = parse_ideviceinstaller_list(&output);
         assert_eq!(apps.len(), 2);
         assert_eq!(apps[0].bundle_id, "com.example.myapp");
@@ -310,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_parse_ideviceinstaller_list_skips_header() {
-        let output = "Total: 2 apps\ncom.example.myapp - 1.0 - My App\n";
+        let output = "CFBundleIdentifier, CFBundleDisplayName\ncom.example.myapp, \"My App\"\n";
         let apps = parse_ideviceinstaller_list(&output);
         assert_eq!(apps.len(), 1);
         assert_eq!(apps[0].bundle_id, "com.example.myapp");

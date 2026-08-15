@@ -13,10 +13,9 @@ interface FileListProps {
   selected: Set<string>;
   onNavigate: (path: string) => void;
   onSelect: (name: string, cmdKey: boolean, shiftKey: boolean) => void;
-  onDragStart?: (file: FileEntry) => void;
 }
 
-export function FileList({ files, selected, onNavigate, onSelect, onDragStart }: FileListProps) {
+export function FileList({ files, selected, onNavigate, onSelect }: FileListProps) {
   return (
     <table className="w-full text-sm text-gray-300">
       <thead>
@@ -29,8 +28,6 @@ export function FileList({ files, selected, onNavigate, onSelect, onDragStart }:
         {files.map((file) => (
           <tr
             key={file.path}
-            draggable={!!onDragStart}
-            onDragStart={() => onDragStart?.(file)}
             onClick={(e) => onSelect(file.name, e.metaKey, e.shiftKey)}
             onDoubleClick={() => file.is_dir && onNavigate(file.path)}
             className={`cursor-pointer hover:bg-gray-700 ${

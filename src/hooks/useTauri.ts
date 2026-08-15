@@ -10,6 +10,13 @@ export interface TransferProgress {
   status: TransferTask["status"];
 }
 
+export interface IosFileInfoReady {
+  path: string;
+  is_dir: boolean;
+  size: number;
+  modified?: number;
+}
+
 // Typed invoke wrappers. Functions that read/list/delete run synchronously
 // (they are fast, single round-trip shell calls). Functions that move file
 // bytes (download/upload) are enqueued on the backend transfer_queue instead
@@ -20,48 +27,50 @@ export interface TransferProgress {
 export const tauriApi = {
   listIosDevices: () => invoke<Device[]>("list_ios_devices"),
   listAndroidDevices: () => invoke<Device[]>("list_android_devices"),
-  listIosApps: (deviceId: string) => invoke<AppInfo[]>("list_ios_apps", { device_id: deviceId }),
-  listAndroidApps: (deviceId: string) => invoke<AppInfo[]>("list_android_apps", { device_id: deviceId }),
+  listIosApps: (deviceId: string) => invoke<AppInfo[]>("list_ios_apps", { deviceId }),
+  listAndroidApps: (deviceId: string) => invoke<AppInfo[]>("list_android_apps", { deviceId }),
   listIosFiles: (deviceId: string, bundleId: string, path: string) =>
-    invoke<FileEntry[]>("list_ios_files", { device_id: deviceId, bundle_id: bundleId, path }),
+    invoke<FileEntry[]>("list_ios_files", { deviceId, bundleId, path }),
+  enqueueIosFileInfo: (deviceId: string, bundleId: string, paths: string[]) =>
+    invoke<void>("enqueue_ios_file_info", { deviceId, bundleId, paths }),
   listAndroidFiles: (deviceId: string, path: string, pkg?: string) =>
-    invoke<FileEntry[]>("list_android_files", { device_id: deviceId, path, package: pkg ?? null }),
+    invoke<FileEntry[]>("list_android_files", { deviceId, path, package: pkg ?? null }),
   iosDelete: (deviceId: string, bundleId: string, remotePath: string) =>
-    invoke<void>("ios_delete", { device_id: deviceId, bundle_id: bundleId, remote_path: remotePath }),
+    invoke<void>("ios_delete", { deviceId, bundleId, remotePath }),
   androidDelete: (deviceId: string, remotePath: string, pkg?: string) =>
-    invoke<void>("android_delete", { device_id: deviceId, remote_path: remotePath, package: pkg ?? null }),
+    invoke<void>("android_delete", { deviceId, remotePath, package: pkg ?? null }),
   // Enqueue-based transfer commands — return the new task's id immediately;
   // actual progress arrives via the "transfer-progress" event (see
   // useTransferListener below).
   enqueueIosDownload: (deviceId: string, bundleId: string, remotePath: string, localPath: string) =>
     invoke<string>("enqueue_ios_download", {
-      device_id: deviceId,
-      bundle_id: bundleId,
-      remote_path: remotePath,
-      local_path: localPath,
+      deviceId,
+      bundleId,
+      remotePath,
+      localPath,
     }),
   enqueueIosUpload: (deviceId: string, bundleId: string, localPath: string, remotePath: string) =>
     invoke<string>("enqueue_ios_upload", {
-      device_id: deviceId,
-      bundle_id: bundleId,
-      local_path: localPath,
-      remote_path: remotePath,
+      deviceId,
+      bundleId,
+      localPath,
+      remotePath,
     }),
   enqueueAndroidDownload: (deviceId: string, remotePath: string, localPath: string, pkg?: string) =>
     invoke<string>("enqueue_android_download", {
-      device_id: deviceId,
-      remote_path: remotePath,
-      local_path: localPath,
+      deviceId,
+      remotePath,
+      localPath,
       package: pkg ?? null,
     }),
   enqueueAndroidUpload: (deviceId: string, localPath: string, remotePath: string, pkg?: string) =>
     invoke<string>("enqueue_android_upload", {
-      device_id: deviceId,
-      local_path: localPath,
-      remote_path: remotePath,
+      deviceId,
+      localPath,
+      remotePath,
       package: pkg ?? null,
     }),
-  cancelTransfer: (taskId: string) => invoke<boolean>("cancel_transfer", { task_id: taskId }),
+  cancelTransfer: (taskId: string) => invoke<boolean>("cancel_transfer", { taskId }),
 };
 
 // Hook: listen for device hotplug events and update the store's device list.
@@ -110,4 +119,21 @@ export function useTransferListener() {
       unlisten.then((fn) => fn());
     };
   }, [upsertTransfer]);
+}
+
+// Hook: listen for `ios-file-info-ready` events and patch the matching
+// FileEntry's real metadata (type/size/modified) into the store as each
+// probe completes — see `enqueue_ios_file_info` in ios_client.rs for why
+// this arrives progressively instead of as one batch response.
+export function useIosFileInfoListener() {
+  const patchFileInfo = useStore((s) => s.patchFileInfo);
+  useEffect(() => {
+    const unlisten = listen<IosFileInfoReady>("ios-file-info-ready", (event) => {
+      const { path, is_dir, size, modified } = event.payload;
+      patchFileInfo(path, { is_dir, size, modified });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [patchFileInfo]);
 }

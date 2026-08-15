@@ -5,14 +5,31 @@ interface ToolbarProps {
   onImport: () => void;
   onExport: () => void;
   onDelete: () => void;
+  canGoBack: boolean;
+  onBack: () => void;
+  canGoUp: boolean;
+  onUp: () => void;
+  onRefresh: () => void;
 }
 
-export function Toolbar({ selectedCount, onImport, onExport, onDelete }: ToolbarProps) {
+export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoUp, onUp, onRefresh }: ToolbarProps) {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
 
+  const navBtn =
+    "px-2 py-1 text-xs rounded text-gray-300 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-default";
+
   return (
     <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-700">
+      <button onClick={onBack} disabled={!canGoBack} className={navBtn} aria-label="返回" title="返回">
+        ←
+      </button>
+      <button onClick={onUp} disabled={!canGoUp} className={navBtn} aria-label="回到上级目录" title="回到上级目录">
+        ↑
+      </button>
+      <button onClick={onRefresh} className={navBtn} aria-label="刷新" title="刷新">
+        ↻
+      </button>
       <button
         onClick={onImport}
         className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
