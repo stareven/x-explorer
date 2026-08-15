@@ -31,7 +31,7 @@ Vite dev server runs on port 1420 (strict — fails if taken). Tauri config expe
 
 ### Two-tier: Rust backend shells out to device CLI tools
 
-The Rust backend does NOT link against libimobiledevice or adb libraries. Instead it spawns subprocess calls to bundled binaries in `src-tauri/binaries/`:
+The Rust backend does NOT link against libimobiledevice or adb libraries. Instead it spawns subprocess calls to CLI tools resolved from the system PATH by `bin_path.rs` (not bundled; user installs via Homebrew):
 
 | Binary | Used for |
 |--------|----------|
@@ -41,7 +41,7 @@ The Rust backend does NOT link against libimobiledevice or adb libraries. Instea
 | `afcclient` | All iOS app file ops via `--documents <bundle_id>` (ls, info, get, put, rm) |
 | `adb` | All Android operations |
 
-`bin_path.rs` resolves binary paths — checks `src-tauri/binaries/` (dev) or the app bundle's Resources dir (production) first, then falls back to the system PATH; if still missing, the error message includes the Homebrew install command (`libimobiledevice` / `ideviceinstaller` / `android-platform-tools`). The `tauri.conf.json` `bundle.resources` glob (`binaries/*`) ensures they ship inside the .app.
+`bin_path.rs` resolves binary paths from the system PATH (executable bit required). If a tool is missing, the error message includes the Homebrew install command (`libimobiledevice` / `ideviceinstaller` / `android-platform-tools`). Tools are NOT bundled with the app.
 
 ### Rust module responsibilities
 

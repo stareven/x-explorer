@@ -1,42 +1,17 @@
-//! Resolves paths to platform-tool binaries (e.g. libimobiledevice, adb).
-//!
-//! Lookup order: bundled binary (dev `src-tauri/binaries/` or .app bundle
-//! Resources) first, so the app always uses its known-good bundled versions;
-//! then the system PATH, so the app also works when the binaries aren't
-//! bundled but are installed locally (e.g. via Homebrew).
+//! Resolves paths to platform-tool binaries (e.g. libimobiledevice, adb)
+//! from the system PATH. The tools are not bundled with the app; if one is
+//! missing, the error message tells the user how to install it via Homebrew.
 
 use std::path::{Path, PathBuf};
 
-/// Returns the path to a binary by name: bundled copy first, then any
-/// executable found on the system PATH. The error message tells the user how
-/// to install the tool via Homebrew.
+/// Returns the path to an executable `name` found on the system PATH.
 pub fn resolve(name: &str) -> Result<PathBuf, String> {
-    // Try development path first
-    let dev_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("binaries")
-        .join(name);
-    if dev_path.exists() {
-        return Ok(dev_path);
-    }
-
-    // Try production bundle path
-    if let Ok(exe) = std::env::current_exe() {
-        let bundle_path = exe
-            .parent()
-            .unwrap_or(&exe)
-            .join(name);
-        if bundle_path.exists() {
-            return Ok(bundle_path);
-        }
-    }
-
-    // Fall back to the system PATH (locally installed tools, e.g. Homebrew)
     if let Some(found) = find_in_path(name) {
         return Ok(found);
     }
 
     Err(format!(
-        "未找到可执行文件 '{}'（已查找应用内置目录与系统 PATH）。请先安装 Homebrew（https://brew.sh），然后执行：{}",
+        "未找到可执行文件 '{}'，请先安装 Homebrew（https://brew.sh），然后执行：{}",
         name,
         brew_hint(name)
     ))
@@ -85,6 +60,14 @@ mod tests {
     fn test_resolve_error_includes_brew_hint() {
         let err = resolve("nonexistent_binary_xyz").unwrap_err();
         assert!(err.contains("brew install"), "error should suggest install: {err}");
+    }
+
+    #[test]
+    fn test_resolve_finds_tool_on_path() {
+        // adb/afcclient etc. are dev-machine prerequisites; at least one of
+        // these must be resolvable in a dev environment.
+        let found = resolve("afcclient").or_else(|_| resolve("adb"));
+        assert!(found.is_ok(), "expected afcclient or adb on PATH");
     }
 
     #[test]
