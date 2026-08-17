@@ -36,7 +36,10 @@ export function DeviceList() {
           }`}
         >
           <span>{device.platform === "ios" ? "📱" : "🤖"}</span>
-          <span className="truncate">{device.name}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{device.name}</span>
+            <span className="block truncate text-xs text-gray-400">{device.id}</span>
+          </span>
           <span
             data-status={device.status}
             className={`ml-auto w-2 h-2 rounded-full ${STATUS_COLOR[device.status]}`}

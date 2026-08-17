@@ -21,16 +21,17 @@ pub fn start(handle: AppHandle) {
         }
 
         // Android
-        if let Ok(out) = run_silent("adb", &["devices"]) {
-            let android = crate::android_client::parse_adb_devices(&out);
+        if let Ok(android) = crate::android_client::list_android_devices() {
             all_devices.extend(android);
         }
 
         let mut known_lock = known.lock().unwrap();
         let changed = all_devices.len() != known_lock.len()
-            || all_devices
-                .iter()
-                .any(|d| !known_lock.iter().any(|k| k.id == d.id && k.status == d.status));
+            || all_devices.iter().any(|d| {
+                !known_lock.iter().any(|k| {
+                    k.id == d.id && k.status == d.status && k.name == d.name
+                })
+            });
 
         if changed {
             *known_lock = all_devices.clone();
@@ -40,13 +41,4 @@ pub fn start(handle: AppHandle) {
 
         thread::sleep(Duration::from_secs(2));
     });
-}
-
-fn run_silent(name: &str, args: &[&str]) -> Result<String, String> {
-    let bin = crate::bin_path::resolve(name)?;
-    let out = std::process::Command::new(bin)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }

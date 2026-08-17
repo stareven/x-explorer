@@ -11,6 +11,22 @@ pub fn parse_idevice_ids(output: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_ideviceinfo_device_name(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        if key.trim() == "DeviceName" {
+            let name = value.trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        } else {
+            None
+        }
+    })
+}
+
 /// Parse output of `ideviceinstaller list -a CFBundleIdentifier -a
 /// CFBundleDisplayName` into AppInfo list.
 /// Format (CSV-like, header row + `id, "name"` per line):
@@ -252,6 +268,7 @@ pub fn list_ios_devices() -> Result<Vec<Device>, String> {
     let mut devices = Vec::new();
     for id in ids {
         let info_out = run_idevice("ideviceinfo", &["-u", &id])?;
+        let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&info_out.stderr);
         let status = if is_untrusted_error(&stderr) {
             "unauthorized".to_string()
@@ -259,7 +276,7 @@ pub fn list_ios_devices() -> Result<Vec<Device>, String> {
             "connected".to_string()
         };
         devices.push(Device {
-            name: id.clone(),
+            name: parse_ideviceinfo_device_name(&info_text).unwrap_or_else(|| id.clone()),
             id,
             platform: "ios".to_string(),
             status,
@@ -572,6 +589,17 @@ mod tests {
     fn test_parse_idevice_ids_empty() {
         let ids = parse_idevice_ids("");
         assert_eq!(ids.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_ideviceinfo_device_name() {
+        let output = "DeviceName: Alice's iPhone\nProductType: iPhone15,2\n";
+        assert_eq!(parse_ideviceinfo_device_name(output), Some("Alice's iPhone".to_string()));
+    }
+
+    #[test]
+    fn test_parse_ideviceinfo_device_name_missing_returns_none() {
+        assert_eq!(parse_ideviceinfo_device_name("ProductType: iPhone15,2\n"), None);
     }
 
     #[test]

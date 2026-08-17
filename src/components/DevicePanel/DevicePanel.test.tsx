@@ -14,10 +14,12 @@ beforeEach(() => {
 });
 
 describe("DeviceList", () => {
-  it("renders device names", () => {
+  it("renders device names and ids", () => {
     render(<DeviceList />);
     expect(screen.getByText("iPhone 15")).toBeInTheDocument();
+    expect(screen.getByText("iphone-1")).toBeInTheDocument();
     expect(screen.getByText("Pixel 7")).toBeInTheDocument();
+    expect(screen.getByText("pixel-1")).toBeInTheDocument();
   });
 
   it("selects device on click", () => {

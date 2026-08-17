@@ -27,26 +27,66 @@ pub fn parse_adb_devices(output: &str) -> Vec<Device> {
         .skip(1) // skip "List of devices attached" header
         .filter(|line| !line.trim().is_empty())
         .map(|line| {
-            let parts: Vec<&str> = line.splitn(2, '\t').collect();
-            let id = parts[0].trim().to_string();
-            let status = if parts.len() > 1 {
-                match parts[1].trim() {
-                    "device" => "connected",
-                    "unauthorized" => "unauthorized",
-                    _ => "offline",
-                }
-                .to_string()
-            } else {
-                "offline".to_string()
+            let mut fields = line.split_whitespace();
+            let id = fields.next().unwrap_or("").to_string();
+            let status = match fields.next().unwrap_or("") {
+                "device" => "connected".to_string(),
+                "unauthorized" => "unauthorized".to_string(),
+                _ => "offline".to_string(),
             };
+            let name = fields
+                .find_map(|field| field.strip_prefix("model:"))
+                .map(|model| model.replace('_', " "))
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| id.clone());
             Device {
                 id: id.clone(),
-                name: id,
+                name,
                 platform: "android".to_string(),
                 status,
             }
         })
         .collect()
+}
+
+fn parse_android_getprop_device_name(output: &str) -> Option<String> {
+    let name = output.trim().replace('_', " ");
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+fn query_android_device_name(adb: &Path, device_id: &str) -> Option<String> {
+    let out = std::process::Command::new(adb)
+        .args(["-s", device_id, "shell", "getprop", "ro.product.model"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    parse_android_getprop_device_name(&stdout)
+}
+
+#[tauri::command(async)]
+pub fn list_android_devices() -> Result<Vec<Device>, String> {
+    let adb = crate::bin_path::resolve("adb")?;
+    let out = std::process::Command::new(&adb)
+        .args(["devices", "-l"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut devices = parse_adb_devices(&text);
+    for device in &mut devices {
+        if device.status == "connected" && device.name == device.id {
+            if let Some(name) = query_android_device_name(&adb, &device.id) {
+                device.name = name;
+            }
+        }
+    }
+    Ok(devices)
 }
 
 /// Parse output of `adb shell pm list packages` into AppInfo list.
@@ -62,6 +102,20 @@ pub fn parse_adb_packages(output: &str) -> Vec<AppInfo> {
             }
         })
         .collect()
+}
+
+/// Parse `dumpsys package <pkg>` output and extract the human-readable label.
+pub fn parse_android_app_label(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let line = line.trim();
+        let label = line.strip_prefix("application-label:")?.trim();
+        let label = label.trim_matches('"').trim_matches('\'').trim();
+        if label.is_empty() {
+            None
+        } else {
+            Some(label.to_string())
+        }
+    })
 }
 
 /// Parse output of `ls -la <path>` (works for both plain adb shell and run-as) into FileEntry list.
@@ -193,26 +247,29 @@ pub fn check_device_authorized(device_id: &str) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-pub fn list_android_devices() -> Result<Vec<Device>, String> {
-    let adb = crate::bin_path::resolve("adb")?;
-    let out = std::process::Command::new(adb)
-        .arg("devices")
-        .output()
-        .map_err(|e| e.to_string())?;
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(parse_adb_devices(&text))
-}
-
-#[tauri::command(async)]
 pub fn list_android_apps(device_id: String) -> Result<Vec<AppInfo>, String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
-    let out = std::process::Command::new(adb)
+    let out = std::process::Command::new(&adb)
         .args(["-s", &device_id, "shell", "pm", "list", "packages"])
         .output()
         .map_err(|e| e.to_string())?;
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(parse_adb_packages(&text))
+    let packages = parse_adb_packages(&text);
+    let mut apps = Vec::with_capacity(packages.len());
+    for app in packages {
+        let out = std::process::Command::new(&adb)
+            .args(["-s", &device_id, "shell", "dumpsys", "package", &app.bundle_id])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let detail = String::from_utf8_lossy(&out.stdout).to_string();
+        let name = parse_android_app_label(&detail).unwrap_or_else(|| app.bundle_id.clone());
+        apps.push(AppInfo {
+            name,
+            bundle_id: app.bundle_id,
+        });
+    }
+    Ok(apps)
 }
 
 /// Returns the app-container root path for a given package name.
@@ -540,6 +597,46 @@ mod tests {
         assert_eq!(devices[0].id, "emulator-5554");
         assert_eq!(devices[0].status, "connected");
         assert_eq!(devices[0].platform, "android");
+    }
+
+    #[test]
+    fn test_parse_adb_devices_reads_model_from_space_separated_long_output() {
+        let output = "List of devices attached\n0123456789ABCDEF device usb:1-1 product:panther model:Pixel_7 device:panther transport_id:1\n";
+        let devices = parse_adb_devices(output);
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, "0123456789ABCDEF");
+        assert_eq!(devices[0].status, "connected");
+        assert_eq!(devices[0].name, "Pixel 7");
+    }
+
+    #[test]
+    fn test_parse_android_getprop_device_name_trims_output() {
+        assert_eq!(parse_android_getprop_device_name("Pixel 7\r\n"), Some("Pixel 7".to_string()));
+    }
+
+    #[test]
+    fn test_parse_android_getprop_device_name_returns_none_for_empty_output() {
+        assert_eq!(parse_android_getprop_device_name("\n"), None);
+    }
+
+    #[test]
+    fn test_parse_android_app_label_reads_quoted_label() {
+        let output = "\
+Package [com.android.settings] (123abc):\n    application-label:'Settings'\n    application-label-en:'Settings'\n";
+        assert_eq!(parse_android_app_label(output), Some("Settings".to_string()));
+    }
+
+    #[test]
+    fn test_list_android_apps_uses_labels_when_available() {
+        let packages = parse_adb_packages("package:com.android.settings\n");
+        let label = parse_android_app_label("application-label:'Settings'\n").unwrap();
+        let app = AppInfo {
+            name: label,
+            bundle_id: packages[0].bundle_id.clone(),
+        };
+
+        assert_eq!(app.name, "Settings");
+        assert_eq!(app.bundle_id, "com.android.settings");
     }
 
     #[test]
