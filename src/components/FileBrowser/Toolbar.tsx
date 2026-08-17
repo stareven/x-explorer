@@ -10,9 +10,10 @@ interface ToolbarProps {
   canGoUp: boolean;
   onUp: () => void;
   onRefresh: () => void;
+  onBookmark: () => void;
 }
 
-export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoUp, onUp, onRefresh }: ToolbarProps) {
+export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoUp, onUp, onRefresh, onBookmark }: ToolbarProps) {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
 
@@ -29,6 +30,9 @@ export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack
       </button>
       <button onClick={onRefresh} className={navBtn} aria-label="刷新" title="刷新">
         ↻
+      </button>
+      <button onClick={onBookmark} className={navBtn} aria-label="收藏当前目录" title="收藏当前目录">
+        ☆
       </button>
       <button
         onClick={onImport}

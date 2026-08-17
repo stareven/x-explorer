@@ -30,6 +30,7 @@ export function FileBrowser() {
   const goBack = useStore((s) => s.goBack);
   const navIndex = useStore((s) => s.navIndex);
   const viewMode = useStore((s) => s.viewMode);
+  const addBookmark = useStore((s) => s.addBookmark);
 
   const device = devices.find((d) => d.id === selectedDeviceId);
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
@@ -158,6 +159,15 @@ export function FileBrowser() {
     reloadFiles({ useCache: false });
   }
 
+  function handleAddBookmark() {
+    if (!device || !browseTarget) return;
+    addBookmark({
+      platform: device.platform,
+      app: browseTarget.kind === "app" ? browseTarget.app : null,
+      path: currentPath,
+    });
+  }
+
   async function handleImport() {
     const paths = await open({ multiple: true });
     if (!paths || !device) return;
@@ -254,6 +264,7 @@ export function FileBrowser() {
         canGoUp={currentPath !== "/"}
         onUp={() => navigate(parentPath(currentPath))}
         onRefresh={handleRefresh}
+        onBookmark={handleAddBookmark}
       />
       <div className="flex-1 overflow-auto">
         {viewMode === "list" ? (

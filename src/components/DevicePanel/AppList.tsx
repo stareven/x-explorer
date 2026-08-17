@@ -7,6 +7,8 @@ export function AppList() {
   const devices = useStore((s) => s.devices);
   const browseTarget = useStore((s) => s.browseTarget);
   const setBrowseTarget = useStore((s) => s.setBrowseTarget);
+  const favoriteAppIds = useStore((s) => s.favoriteAppIds);
+  const toggleFavoriteApp = useStore((s) => s.toggleFavoriteApp);
   const [apps, setApps] = useState<AppInfo[]>([]);
 
   const device = devices.find((d) => d.id === selectedDeviceId);
@@ -52,6 +54,33 @@ export function AppList() {
     );
   }
 
+  const favorites = apps.filter((a) => favoriteAppIds.includes(a.bundle_id));
+  const others = apps.filter((a) => !favoriteAppIds.includes(a.bundle_id));
+
+  function renderApp(app: AppInfo, isFavorite: boolean) {
+    const active = browseTarget?.kind === "app" && browseTarget.app.bundle_id === app.bundle_id;
+    return (
+      <div key={app.bundle_id} className="flex items-center">
+        <button
+          onClick={() => setBrowseTarget({ kind: "app", app })}
+          className={`flex-1 min-w-0 text-left px-3 py-1.5 rounded text-xs truncate ${
+            active ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700"
+          }`}
+        >
+          {app.name}
+        </button>
+        <button
+          onClick={() => toggleFavoriteApp(app.bundle_id)}
+          className={`px-1.5 py-1 text-xs ${isFavorite ? "text-yellow-400" : "text-gray-600 hover:text-gray-400"}`}
+          aria-label={isFavorite ? "取消收藏" : "收藏"}
+          title={isFavorite ? "取消收藏" : "收藏"}
+        >
+          {isFavorite ? "★" : "☆"}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="p-2 border-t border-gray-700">
       <p className="text-xs font-semibold text-gray-400 uppercase px-2 mb-1">应用</p>
@@ -68,19 +97,14 @@ export function AppList() {
           <span>外部存储</span>
         </button>
       )}
-      {apps.map((app) => (
-        <button
-          key={app.bundle_id}
-          onClick={() => setBrowseTarget({ kind: "app", app })}
-          className={`w-full text-left px-3 py-1.5 rounded text-xs truncate ${
-            browseTarget?.kind === "app" && browseTarget.app.bundle_id === app.bundle_id
-              ? "bg-blue-600 text-white"
-              : "text-gray-300 hover:bg-gray-700"
-          }`}
-        >
-          {app.name}
-        </button>
-      ))}
+      {favorites.length > 0 && (
+        <>
+          <p className="text-xs text-gray-500 px-2 mt-2 mb-1">常用</p>
+          {favorites.map((app) => renderApp(app, true))}
+          <p className="text-xs text-gray-500 px-2 mt-2 mb-1">全部</p>
+        </>
+      )}
+      {others.map((app) => renderApp(app, false))}
     </div>
   );
 }

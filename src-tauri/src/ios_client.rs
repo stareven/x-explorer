@@ -121,12 +121,31 @@ pub fn parse_afcclient_info(output: &str) -> Option<AfcFileInfo> {
 /// Lines whose metadata can't be parsed degrade to a placeholder
 /// (`is_dir: false, size: 0, modified: None`) so the frontend's info-probe
 /// fallback (`enqueue_ios_file_info`) re-fetches just those entries.
+fn strip_ansi_escape_codes(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 pub fn parse_afcclient_ls_long(output: &str) -> Vec<(String, AfcFileInfo)> {
     let placeholder = || AfcFileInfo { is_dir: false, size: 0, modified: None };
     output
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|line| {
+            let line = strip_ansi_escape_codes(line);
             let parts: Vec<&str> = line.split_whitespace().collect();
             // 9 metadata fields (perms nlink owner group size day mon year time)
             // followed by the file name; rejoin remainder to preserve spaces.
@@ -174,6 +193,12 @@ fn run_idevice(bin_name: &str, args: &[&str]) -> Result<std::process::Output, St
     let bin = crate::bin_path::resolve(bin_name)?;
     std::process::Command::new(bin)
         .args(args)
+        .env("LANG", "C.UTF-8")
+        .env("LC_ALL", "C.UTF-8")
+        .env("NO_COLOR", "1")
+        .env("CLICOLOR", "0")
+        .env_remove("CLICOLOR_FORCE")
+        .env("TERM", "dumb")
         .output()
         .map_err(|e| e.to_string())
 }
@@ -574,6 +599,15 @@ mod tests {
     #[test]
     fn test_parse_afcclient_ls_long_empty() {
         assert_eq!(parse_afcclient_ls_long("").len(), 0);
+    }
+
+    #[test]
+    fn test_parse_afcclient_ls_long_strips_ansi_colors() {
+        let output = "drwxr-xr-x    2 mobile mobile         64 17 Aug 2026 10:36:12 \u{1b}[0;36mmaime\u{1b}[m\n";
+        let entries = parse_afcclient_ls_long(output);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "maime");
+        assert!(entries[0].1.is_dir);
     }
 
     #[test]
