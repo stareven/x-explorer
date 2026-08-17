@@ -32,8 +32,16 @@ pub fn run() {
             transfer_queue::cancel_transfer,
             transfer_queue::enqueue_ios_download,
             transfer_queue::enqueue_ios_upload,
+            transfer_queue::enqueue_ios_delete,
+            transfer_queue::enqueue_ios_download_batch,
+            transfer_queue::enqueue_ios_upload_batch,
+            transfer_queue::enqueue_ios_delete_batch,
             transfer_queue::enqueue_android_download,
             transfer_queue::enqueue_android_upload,
+            transfer_queue::enqueue_android_delete,
+            transfer_queue::enqueue_android_download_batch,
+            transfer_queue::enqueue_android_upload_batch,
+            transfer_queue::enqueue_android_delete_batch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

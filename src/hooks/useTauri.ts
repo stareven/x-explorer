@@ -5,9 +5,19 @@ import { AppInfo, Device, FileEntry, TransferTask, useStore } from "../store";
 
 export interface TransferProgress {
   task_id: string;
-  transferred_bytes: number;
-  total_bytes: number;
+  kind: TransferTask["kind"];
+  src: string;
+  dst: string;
+  completed_files: number;
+  total_files: number;
   status: TransferTask["status"];
+  error?: string;
+}
+
+export interface TransferFileItem {
+  src: string;
+  dst: string;
+  is_dir: boolean;
 }
 
 export interface IosFileInfoReady {
@@ -17,13 +27,13 @@ export interface IosFileInfoReady {
   modified?: number;
 }
 
-// Typed invoke wrappers. Functions that read/list/delete run synchronously
+// Typed invoke wrappers. Functions that read/list run synchronously
 // (they are fast, single round-trip shell calls). Functions that move file
-// bytes (download/upload) are enqueued on the backend transfer_queue instead
-// of awaited directly, so progress can be tracked and the operation can be
-// cancelled — see transfer_queue.rs (Task 6). Android file operations that
-// target an app's data directory take an optional `package`; omit it (or
-// pass `undefined`) when browsing external storage.
+// bytes (download/upload) or enqueue deletions are sent through the backend
+// transfer_queue instead of awaited directly, so progress can be tracked and
+// the operation can be cancelled — see transfer_queue.rs (Task 6). Android file
+// operations that target an app's data directory take an optional `package`; omit
+// it (or pass `undefined`) when browsing external storage.
 export const tauriApi = {
   listIosDevices: () => invoke<Device[]>("list_ios_devices"),
   listAndroidDevices: () => invoke<Device[]>("list_android_devices"),
@@ -36,9 +46,13 @@ export const tauriApi = {
   listAndroidFiles: (deviceId: string, path: string, pkg?: string) =>
     invoke<FileEntry[]>("list_android_files", { deviceId, path, package: pkg ?? null }),
   iosDelete: (deviceId: string, bundleId: string, remotePath: string) =>
-    invoke<void>("ios_delete", { deviceId, bundleId, remotePath }),
+    invoke<string>("enqueue_ios_delete", { deviceId, bundleId, remotePath }),
+  iosDeleteBatch: (deviceId: string, bundleId: string, remotePaths: string[]) =>
+    invoke<string>("enqueue_ios_delete_batch", { deviceId, bundleId, remotePaths }),
   androidDelete: (deviceId: string, remotePath: string, pkg?: string) =>
-    invoke<void>("android_delete", { deviceId, remotePath, package: pkg ?? null }),
+    invoke<string>("enqueue_android_delete", { deviceId, remotePath, package: pkg ?? null }),
+  androidDeleteBatch: (deviceId: string, remotePaths: string[], pkg?: string) =>
+    invoke<string>("enqueue_android_delete_batch", { deviceId, remotePaths, package: pkg ?? null }),
   // Enqueue-based transfer commands — return the new task's id immediately;
   // actual progress arrives via the "transfer-progress" event (see
   // useTransferListener below).
@@ -49,6 +63,8 @@ export const tauriApi = {
       remotePath,
       localPath,
     }),
+  enqueueIosDownloadBatch: (deviceId: string, bundleId: string, files: TransferFileItem[]) =>
+    invoke<string>("enqueue_ios_download_batch", { deviceId, bundleId, files }),
   enqueueIosUpload: (deviceId: string, bundleId: string, localPath: string, remotePath: string) =>
     invoke<string>("enqueue_ios_upload", {
       deviceId,
@@ -56,6 +72,8 @@ export const tauriApi = {
       localPath,
       remotePath,
     }),
+  enqueueIosUploadBatch: (deviceId: string, bundleId: string, files: TransferFileItem[]) =>
+    invoke<string>("enqueue_ios_upload_batch", { deviceId, bundleId, files }),
   enqueueAndroidDownload: (deviceId: string, remotePath: string, localPath: string, pkg?: string) =>
     invoke<string>("enqueue_android_download", {
       deviceId,
@@ -63,6 +81,8 @@ export const tauriApi = {
       localPath,
       package: pkg ?? null,
     }),
+  enqueueAndroidDownloadBatch: (deviceId: string, files: TransferFileItem[], pkg?: string) =>
+    invoke<string>("enqueue_android_download_batch", { deviceId, files, package: pkg ?? null }),
   enqueueAndroidUpload: (deviceId: string, localPath: string, remotePath: string, pkg?: string) =>
     invoke<string>("enqueue_android_upload", {
       deviceId,
@@ -70,6 +90,8 @@ export const tauriApi = {
       remotePath,
       package: pkg ?? null,
     }),
+  enqueueAndroidUploadBatch: (deviceId: string, files: TransferFileItem[], pkg?: string) =>
+    invoke<string>("enqueue_android_upload_batch", { deviceId, files, package: pkg ?? null }),
   cancelTransfer: (taskId: string) => invoke<boolean>("cancel_transfer", { taskId }),
 };
 
@@ -102,17 +124,15 @@ export function useTransferListener() {
   useEffect(() => {
     const unlisten = listen<TransferProgress>("transfer-progress", (event) => {
       const p = event.payload;
-      const { transfers } = useStore.getState();
-      const existing = transfers.find((t) => t.id === p.task_id);
       upsertTransfer({
         id: p.task_id,
-        kind: existing?.kind ?? "download",
-        src: existing?.src ?? "",
-        dst: existing?.dst ?? "",
-        total_bytes: p.total_bytes,
-        transferred_bytes: p.transferred_bytes,
+        kind: p.kind,
+        src: p.src,
+        dst: p.dst,
+        total_files: p.total_files,
+        completed_files: p.completed_files,
         status: p.status,
-        error: existing?.error,
+        error: p.error,
       });
     });
     return () => {

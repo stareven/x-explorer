@@ -48,8 +48,8 @@ describe("useStore", () => {
         kind: "download",
         src: "/remote/a",
         dst: "/local/a",
-        total_bytes: 100,
-        transferred_bytes: 0,
+        total_files: 1,
+        completed_files: 0,
         status: "pending",
       });
     });
@@ -62,8 +62,8 @@ describe("useStore", () => {
         kind: "download",
         src: "/remote/a",
         dst: "/local/a",
-        total_bytes: 100,
-        transferred_bytes: 50,
+        total_files: 1,
+        completed_files: 1,
         status: "running",
       });
     });
@@ -71,7 +71,7 @@ describe("useStore", () => {
     expect(result.current.transfers[0]).toMatchObject({
       id: "task-1",
       status: "running",
-      transferred_bytes: 50,
+      completed_files: 1,
     });
   });
 

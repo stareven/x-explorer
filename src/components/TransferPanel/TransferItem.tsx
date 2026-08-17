@@ -3,8 +3,8 @@ import { tauriApi } from "../../hooks/useTauri";
 
 export function TransferItem({ task }: { task: TransferTask }) {
   const pct =
-    task.total_bytes > 0
-      ? Math.round((task.transferred_bytes / task.total_bytes) * 100)
+    task.total_files > 0
+      ? Math.round((task.completed_files / task.total_files) * 100)
       : 0;
 
   const canCancel = task.status === "pending" || task.status === "running";
@@ -16,6 +16,9 @@ export function TransferItem({ task }: { task: TransferTask }) {
           {task.src.split("/").pop()}
         </span>
         <div className="flex items-center gap-2">
+          <span className="tabular-nums text-gray-400">
+            {task.completed_files}/{task.total_files}
+          </span>
           <span className={`text-xs ${task.status === "error" ? "text-red-400" : "text-gray-500"}`}>
             {task.status === "error" ? task.error ?? "error" : task.status}
           </span>

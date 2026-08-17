@@ -22,11 +22,11 @@ export interface FileEntry {
 
 export interface TransferTask {
   id: string;
-  kind: "upload" | "download";
+  kind: "upload" | "download" | "delete";
   src: string;
   dst: string;
-  total_bytes: number;
-  transferred_bytes: number;
+  total_files: number;
+  completed_files: number;
   status: "pending" | "running" | "done" | "error" | "cancelled";
   error?: string;
 }

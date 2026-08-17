@@ -29,6 +29,7 @@ export function FileBrowser() {
   const navigate = useStore((s) => s.navigate);
   const goBack = useStore((s) => s.goBack);
   const navIndex = useStore((s) => s.navIndex);
+  const transfers = useStore((s) => s.transfers);
   const viewMode = useStore((s) => s.viewMode);
   const addBookmark = useStore((s) => s.addBookmark);
 
@@ -36,10 +37,26 @@ export function FileBrowser() {
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
   const fileNames = files.map((f) => f.name);
   const { selected, handleClick, selectAll, clearSelection } = useSelection(fileNames);
-  const { handleDrop, handleDragOver } = useFileDrop();
-
   useTransferListener();
+  const { handleDrop, handleDragOver } = useFileDrop();
   useIosFileInfoListener();
+
+  const refreshedTransfers = useRef(new Set<string>());
+
+  useEffect(() => {
+    const terminalTransfers = transfers.filter(
+      (task) =>
+        task.status === "done" || task.status === "error" || task.status === "cancelled"
+    );
+    const pendingRefresh = terminalTransfers.some((task) => {
+      if (refreshedTransfers.current.has(task.id)) return false;
+      refreshedTransfers.current.add(task.id);
+      return true;
+    });
+    if (pendingRefresh) {
+      reloadFiles({ useCache: false });
+    }
+  }, [currentPath, device?.id, browseTarget, transfers]);
 
   // Latest-call-wins guard for async reloads: each reloadFiles call bumps the
   // sequence and discards older in-flight results. Covers both navigation
@@ -172,18 +189,22 @@ export function FileBrowser() {
     const paths = await open({ multiple: true });
     if (!paths || !device) return;
     const pathList = Array.isArray(paths) ? paths : [paths];
-    for (const localPath of pathList) {
+    const uploadFiles = pathList.map((localPath) => {
       const fileName = localPath.split("/").pop()!;
-      const remotePath = `${currentPath.replace(/\/$/, "")}/${fileName}`;
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.enqueueIosUpload(device.id, pkg!, localPath, remotePath);
-        } else {
-          await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
-        }
-      } catch (e) {
-        console.error(`Failed to enqueue upload for ${fileName}:`, e);
+      return {
+        src: localPath,
+        dst: `${currentPath.replace(/\/$/, "")}/${fileName}`,
+        is_dir: false,
+      };
+    });
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.enqueueIosUploadBatch(device.id, pkg!, uploadFiles);
+      } else {
+        await tauriApi.enqueueAndroidUploadBatch(device.id, uploadFiles, pkg);
       }
+    } catch (e) {
+      console.error("Failed to enqueue upload:", e);
     }
   }
 
@@ -192,35 +213,36 @@ export function FileBrowser() {
     const selectedFiles = files.filter((f) => selected.has(f.name));
     const destDir = await open({ directory: true });
     if (!destDir || typeof destDir !== "string") return;
-    for (const file of selectedFiles) {
-      const localPath = `${destDir}/${file.name}`;
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.enqueueIosDownload(device.id, pkg!, file.path, localPath);
-        } else {
-          await tauriApi.enqueueAndroidDownload(device.id, file.path, localPath, pkg);
-        }
-      } catch (e) {
-        console.error(`Failed to enqueue download for ${file.name}:`, e);
+    const downloadFiles = selectedFiles.map((file) => ({
+      src: file.path,
+      dst: `${destDir}/${file.name}`,
+      is_dir: file.is_dir,
+    }));
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.enqueueIosDownloadBatch(device.id, pkg!, downloadFiles);
+      } else {
+        await tauriApi.enqueueAndroidDownloadBatch(device.id, downloadFiles, pkg);
       }
+    } catch (e) {
+      console.error("Failed to enqueue download:", e);
     }
   }
 
-  async function handleDelete() {    if (!device || !window.confirm(`删除选中的 ${selected.size} 个文件？`)) return;
+  async function handleDelete() {
+    if (!device || !window.confirm(`删除选中的 ${selected.size} 个文件？`)) return;
     const selectedFiles = files.filter((f) => selected.has(f.name));
-    for (const file of selectedFiles) {
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.iosDelete(device.id, pkg!, file.path);
-        } else {
-          await tauriApi.androidDelete(device.id, file.path, pkg);
-        }
-      } catch (e) {
-        console.error(`Failed to delete ${file.name}:`, e);
+    const remotePaths = selectedFiles.map((file) => file.path);
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.iosDeleteBatch(device.id, pkg!, remotePaths);
+      } else {
+        await tauriApi.androidDeleteBatch(device.id, remotePaths, pkg);
       }
+    } catch (e) {
+      console.error("Failed to enqueue delete:", e);
     }
     clearSelection();
-    await reloadFiles();
   }
 
   if (!device) {

@@ -1,4 +1,6 @@
-use crate::types::{AppInfo, Device, FileEntry};
+use crate::types::{AppInfo, Device, DownloadFile, FileEntry};
+use std::fs;
+use std::path::Path;
 
 /// Parse output of `idevice_id -l` into device ID list.
 pub fn parse_idevice_ids(output: &str) -> Vec<String> {
@@ -396,19 +398,106 @@ pub fn enqueue_ios_file_info(
     });
 }
 
-/// Not a #[tauri::command] — called internally by transfer_queue only.
-pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
+fn ios_download_recursive(device_id: &str, bundle_id: &str, remote: &str, local: &str) -> Result<(), String> {
+    let info_out = run_afcclient(device_id, bundle_id, &["info", remote])?;
+    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+    if let Some(info) = parse_afcclient_info(&info_text) {
+        if info.is_dir {
+            fs::create_dir_all(local).map_err(|e| e.to_string())?;
+            let ls_out = run_afcclient(device_id, bundle_id, &["--", "ls", "-l", remote])?;
+            let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
+            if !ls_out.status.success() || ls_text.contains("Error:") {
+                return Err(afc_error_message(ls_text.trim(), bundle_id));
+            }
+            for (name, _) in parse_afcclient_ls_long(&ls_text) {
+                let child_remote = crate::file_ops::join_path(remote, &name);
+                let child_local = Path::new(local).join(&name);
+                ios_download_recursive(device_id, bundle_id, &child_remote, child_local.to_string_lossy().as_ref())?;
+            }
+            Ok(())
+        } else {
+            if let Some(parent) = Path::new(local).parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+            let out = run_afcclient(device_id, bundle_id, &["get", remote, local])?;
+            if out.status.success() {
+                Ok(())
+            } else {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                Err(afc_error_message(&stderr, bundle_id))
+            }
+        }
+    } else {
+        Err("无法识别 iOS 文件信息".to_string())
+    }
+}
+
+fn collect_ios_download_files_recursive(
+    device_id: &str,
+    bundle_id: &str,
+    remote: &str,
+    user_remote: &str,
+    local: &str,
+    out: &mut Vec<DownloadFile>,
+) -> Result<(), String> {
+    let info_out = run_afcclient(device_id, bundle_id, &["info", remote])?;
+    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+    let info = parse_afcclient_info(&info_text).ok_or_else(|| "无法识别 iOS 文件信息".to_string())?;
+    if info.is_dir {
+        let ls_out = run_afcclient(device_id, bundle_id, &["--", "ls", "-l", remote])?;
+        let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
+        if !ls_out.status.success() || ls_text.contains("Error:") {
+            return Err(afc_error_message(ls_text.trim(), bundle_id));
+        }
+        for (name, _) in parse_afcclient_ls_long(&ls_text) {
+            let child_remote = crate::file_ops::join_path(remote, &name);
+            let child_user_remote = crate::file_ops::join_path(user_remote, &name);
+            let child_local = Path::new(local).join(&name);
+            collect_ios_download_files_recursive(
+                device_id,
+                bundle_id,
+                &child_remote,
+                &child_user_remote,
+                child_local.to_string_lossy().as_ref(),
+                out,
+            )?;
+        }
+    } else {
+        out.push(DownloadFile {
+            remote_path: user_remote.to_string(),
+            local_path: local.to_string(),
+        });
+    }
+    Ok(())
+}
+
+pub fn collect_ios_download_files(
+    device_id: &str,
+    bundle_id: &str,
+    remote_path: &str,
+    local_path: &str,
+) -> Result<Vec<DownloadFile>, String> {
+    check_ios_trusted(device_id)?;
+    let safe_remote = crate::file_ops::sanitize_relative_path(remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    let remote = documents_path(&safe_remote);
+    let user_remote = crate::file_ops::normalize_path(&safe_remote);
+    let mut files = Vec::new();
+    collect_ios_download_files_recursive(device_id, bundle_id, &remote, &user_remote, local_path, &mut files)?;
+    Ok(files)
+}
+
+/// Download a single file or directory tree from an iOS app container.
+pub fn ios_download_dir(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
     check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote = documents_path(&safe_remote);
-    let out = run_afcclient(&device_id, &bundle_id, &["get", &remote, &local_path])?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        Err(afc_error_message(&stderr, &bundle_id))
-    }
+    ios_download_recursive(&device_id, &bundle_id, &remote, &local_path)
+}
+
+pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
+    ios_download_dir(device_id, bundle_id, remote_path, local_path)
 }
 
 /// Not a #[tauri::command] — called internally by transfer_queue only.

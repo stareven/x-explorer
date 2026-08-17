@@ -16,7 +16,9 @@
 //! approved on-device yet, and shelling out anyway just produces a confusing raw
 //! error.
 
-use crate::types::{AppInfo, Device, FileEntry};
+use crate::types::{AppInfo, Device, DownloadFile, FileEntry};
+use std::fs;
+use std::path::Path;
 
 /// Parse output of `adb devices` into a list of Device structs.
 pub fn parse_adb_devices(output: &str) -> Vec<Device> {
@@ -205,36 +207,58 @@ pub fn list_android_files(
     Ok(parse_adb_ls(&text, &full_path))
 }
 
-/// Download a single file. External storage uses `adb pull` directly.
-/// App-container files are streamed via `run-as <pkg> cat <path>` piped to a local file,
-/// since `adb pull` cannot read paths gated by SELinux.
-/// Not a #[tauri::command] — called internally by transfer_queue, which is the
-/// only path the frontend uses to trigger downloads (see Task 1's main.rs note).
-pub fn android_download(
-    device_id: String,
-    remote_path: String,
-    local_path: String,
+pub fn collect_android_download_files(
+    device_id: &str,
+    remote_path: &str,
+    local_path: &str,
     package: Option<String>,
-) -> Result<(), String> {
-    check_device_authorized(&device_id)?;
+    is_dir: bool,
+) -> Result<Vec<DownloadFile>, String> {
+    if !is_dir {
+        return Ok(vec![DownloadFile {
+            remote_path: remote_path.to_string(),
+            local_path: local_path.to_string(),
+        }]);
+    }
+
+    let entries = list_android_files(device_id.to_string(), remote_path.to_string(), package.clone())?;
+    let mut files = Vec::new();
+    for entry in entries {
+        let child_local = Path::new(local_path).join(&entry.name);
+        if entry.is_dir {
+            files.extend(collect_android_download_files(
+                device_id,
+                &entry.path,
+                child_local.to_string_lossy().as_ref(),
+                package.clone(),
+                true,
+            )?);
+        } else {
+            files.push(DownloadFile {
+                remote_path: entry.path,
+                local_path: child_local.to_string_lossy().to_string(),
+            });
+        }
+    }
+    Ok(files)
+}
+
+fn android_download_file_full(device_id: &str, remote_path: &str, local_path: &str, package: Option<&str>) -> Result<(), String> {
+    if let Some(parent) = Path::new(local_path).parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
     let adb = crate::bin_path::resolve("adb")?;
-    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
-        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    let remote_path = match &package {
-        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &safe_remote),
-        None => crate::file_ops::normalize_path(&safe_remote),
-    };
     match package {
         None => {
             let status = std::process::Command::new(&adb)
-                .args(["-s", &device_id, "pull", &remote_path, &local_path])
+                .args(["-s", device_id, "pull", remote_path, local_path])
                 .status()
                 .map_err(|e| e.to_string())?;
             if status.success() { Ok(()) } else { Err("adb pull failed".to_string()) }
         }
         Some(pkg) => {
-            let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
-            args.extend(shell_args(&Some(pkg), &["cat", &remote_path]));
+            let mut args: Vec<String> = vec!["-s".to_string(), device_id.to_string(), "shell".to_string()];
+            args.extend(shell_args(&Some(pkg.to_string()), &["cat", remote_path]));
             let out = std::process::Command::new(&adb)
                 .args(&args)
                 .output()
@@ -243,11 +267,99 @@ pub fn android_download(
             if let Some(err) = not_debuggable_error(&stderr) {
                 return Err(err);
             }
-            std::fs::write(&local_path, &out.stdout).map_err(|e| e.to_string())?;
-            Ok(())
+            fs::write(local_path, &out.stdout).map_err(|e| e.to_string())?;
+            if out.status.success() { Ok(()) } else { Err("run-as cat failed".to_string()) }
         }
     }
 }
+
+fn android_app_full_path(package: &str, path: &str) -> String {
+    let normalized = crate::file_ops::normalize_path(path);
+    let root = pkg_root(package);
+    if normalized == root || normalized.starts_with(&format!("{}/", root)) {
+        normalized
+    } else {
+        crate::file_ops::join_path(&root, path)
+    }
+}
+
+fn android_app_relative_path(package: &str, full_path: &str) -> String {
+    let root = pkg_root(package);
+    full_path
+        .strip_prefix(&root)
+        .map(|path| if path.is_empty() { "/".to_string() } else { path.to_string() })
+        .unwrap_or_else(|| full_path.to_string())
+}
+
+fn android_download_recursive(device_id: &str, remote_path: &str, local_path: &str, package: &str) -> Result<(), String> {
+    let entries = list_android_files(device_id.to_string(), remote_path.to_string(), Some(package.to_string()))?;
+    let is_leaf = entries.len() == 1
+        && android_app_relative_path(package, &entries[0].path) == crate::file_ops::normalize_path(remote_path)
+        && !entries[0].is_dir;
+    if is_leaf {
+        let full_remote = crate::file_ops::join_path(&pkg_root(package), remote_path);
+        return android_download_file_full(device_id, &full_remote, local_path, Some(package));
+    }
+
+    fs::create_dir_all(local_path).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let child_local = Path::new(local_path).join(&entry.name);
+        if entry.is_dir {
+            let child_remote = android_app_relative_path(package, &entry.path);
+            android_download_recursive(device_id, &child_remote, child_local.to_string_lossy().as_ref(), package)?;
+        } else {
+            android_download_file_full(device_id, &entry.path, child_local.to_string_lossy().as_ref(), Some(package))?;
+        }
+    }
+    Ok(())
+}
+
+/// Download a single file or directory. External storage uses `adb pull` directly.
+/// App-container paths recurse through `list_android_files` and `run-as cat`.
+/// Not a #[tauri::command] — called internally by transfer_queue only.
+pub fn android_download_dir(
+    device_id: String,
+    remote_path: String,
+    local_path: String,
+    package: Option<String>,
+) -> Result<(), String> {
+    check_device_authorized(&device_id)?;
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    match package.as_ref() {
+        None => {
+            let remote_path = crate::file_ops::normalize_path(&safe_remote);
+            android_download_file_full(&device_id, &remote_path, &local_path, None)
+        }
+        Some(pkg) => {
+            let full_remote = android_app_full_path(pkg, &safe_remote);
+            let remote_path = android_app_relative_path(pkg, &full_remote);
+            android_download_recursive(&device_id, &remote_path, &local_path, pkg)
+        }
+    }
+}
+
+pub fn android_download(
+    device_id: String,
+    remote_path: String,
+    local_path: String,
+    package: Option<String>,
+) -> Result<(), String> {
+    check_device_authorized(&device_id)?;
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    match package.as_ref() {
+        None => {
+            let remote_path = crate::file_ops::normalize_path(&safe_remote);
+            android_download_file_full(&device_id, &remote_path, &local_path, None)
+        }
+        Some(pkg) => {
+            let remote_path = android_app_full_path(pkg, &safe_remote);
+            android_download_file_full(&device_id, &remote_path, &local_path, Some(pkg))
+        }
+    }
+}
+
 
 /// Upload a single file. External storage uses `adb push` directly.
 /// App-container files are staged via `/data/local/tmp` (world-writable), then moved in with

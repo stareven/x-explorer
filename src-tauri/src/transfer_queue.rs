@@ -1,23 +1,36 @@
-use crate::types::{TransferProgress, TransferTask};
+use crate::types::{DownloadFile, TransferProgress, TransferTask};
+use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
+#[derive(Clone, Deserialize)]
+pub struct FileTransferItem {
+    pub src: String,
+    pub dst: String,
+    #[serde(default)]
+    pub is_dir: bool,
+}
+
 /// A single file operation to perform. `package` is Some(bundle_id) for iOS or
 /// Some(package_name) for an Android app-container path; None for external storage / no-app iOS n/a.
 #[derive(Clone)]
 pub enum JobOp {
     IosDownload { device_id: String, bundle_id: String, remote_path: String, local_path: String },
+    IosDownloadDir { device_id: String, bundle_id: String, remote_path: String, local_path: String },
     IosUpload { device_id: String, bundle_id: String, local_path: String, remote_path: String },
+    IosDelete { device_id: String, bundle_id: String, remote_path: String },
     AndroidDownload { device_id: String, remote_path: String, local_path: String, package: Option<String> },
+    AndroidDownloadDir { device_id: String, remote_path: String, local_path: String, package: Option<String> },
     AndroidUpload { device_id: String, local_path: String, remote_path: String, package: Option<String> },
+    AndroidDelete { device_id: String, remote_path: String, package: Option<String> },
 }
 
 struct Job {
     task: TransferTask,
-    op: JobOp,
+    ops: Vec<JobOp>,
 }
 
 /// RAII guard that decrements `running_count` when dropped, ensuring the counter
@@ -77,7 +90,7 @@ impl TransferQueue {
     }
 
     fn run_job(&self, handle: &AppHandle, job: Job) {
-        let Job { mut task, op } = job;
+        let Job { mut task, ops } = job;
 
         {
             let mut tasks = self.tasks.lock().unwrap();
@@ -89,60 +102,88 @@ impl TransferQueue {
         }
         emit_progress(handle, &task);
 
+        let ops = match prepare_ops(ops) {
+            Ok(ops) => ops,
+            Err(e) => {
+                task.status = "error".to_string();
+                task.error = Some(e);
+                self.tasks.lock().unwrap().insert(task.id.clone(), task.clone());
+                emit_progress(handle, &task);
+                return;
+            }
+        };
+        update_task_total_files(&mut task, ops.len());
+        {
+            let tasks = self.tasks.lock().unwrap();
+            if is_cancelled(&tasks, &task.id) {
+                task.status = "cancelled".to_string();
+                drop(tasks);
+                emit_progress(handle, &task);
+                return;
+            }
+        }
+        self.tasks.lock().unwrap().insert(task.id.clone(), task.clone());
+        emit_progress(handle, &task);
+
         // Counted for the duration of the blocking transfer call only; the guard below
         // decrements on every exit path (normal completion, error, or mid-flight cancellation).
         *self.running_count.lock().unwrap() += 1;
         let _guard = RunningCountGuard { count: &self.running_count };
 
-        let result = match &op {
-            JobOp::IosDownload { device_id, bundle_id, remote_path, local_path } =>
-                crate::ios_client::ios_download(device_id.clone(), bundle_id.clone(), remote_path.clone(), local_path.clone()),
-            JobOp::IosUpload { device_id, bundle_id, local_path, remote_path } =>
-                crate::ios_client::ios_upload(device_id.clone(), bundle_id.clone(), local_path.clone(), remote_path.clone()),
-            JobOp::AndroidDownload { device_id, remote_path, local_path, package } =>
-                crate::android_client::android_download(device_id.clone(), remote_path.clone(), local_path.clone(), package.clone()),
-            JobOp::AndroidUpload { device_id, local_path, remote_path, package } =>
-                crate::android_client::android_upload(device_id.clone(), local_path.clone(), remote_path.clone(), package.clone()),
-        };
+        for op in ops {
+            {
+                let tasks = self.tasks.lock().unwrap();
+                if is_cancelled(&tasks, &task.id) {
+                    task.status = "cancelled".to_string();
+                    drop(tasks);
+                    emit_progress(handle, &task);
+                    return;
+                }
+            }
+            let result = run_op(op);
 
-        let mut tasks = self.tasks.lock().unwrap();
-        // A cancellation requested mid-flight still lands here after the blocking call returns;
-        // respect it instead of overwriting with a success/error status.
-        if is_cancelled(&tasks, &task.id) {
+            let mut tasks = self.tasks.lock().unwrap();
+            // A cancellation requested mid-flight still lands here after the blocking call returns;
+            // respect it instead of continuing with the remaining files.
+            if is_cancelled(&tasks, &task.id) {
+                task.status = "cancelled".to_string();
+                tasks.insert(task.id.clone(), task.clone());
+                drop(tasks);
+                emit_progress(handle, &task);
+                return;
+            }
+            match result {
+                Ok(()) => {
+                    task.completed_files += 1;
+                    if task.completed_files == task.total_files {
+                        task.status = "done".to_string();
+                    }
+                }
+                Err(e) => {
+                    task.status = "error".to_string();
+                    task.error = Some(e);
+                    tasks.insert(task.id.clone(), task.clone());
+                    drop(tasks);
+                    emit_progress(handle, &task);
+                    return;
+                }
+            }
+            tasks.insert(task.id.clone(), task.clone());
             drop(tasks);
             emit_progress(handle, &task);
-            return;
         }
-        match result {
-            Ok(()) => {
-                task.status = "done".to_string();
-                task.transferred_bytes = task.total_bytes.max(1);
-            }
-            Err(e) => {
-                task.status = "error".to_string();
-                task.error = Some(e);
-            }
-        }
-        tasks.insert(task.id.clone(), task.clone());
-        drop(tasks);
-        emit_progress(handle, &task);
     }
 
     pub fn enqueue(&self, kind: &str, src: &str, dst: &str, op: JobOp) -> String {
-        let id = Uuid::new_v4().to_string();
-        let task = TransferTask {
-            id: id.clone(),
-            kind: kind.to_string(),
-            src: src.to_string(),
-            dst: dst.to_string(),
-            total_bytes: 1,
-            transferred_bytes: 0,
-            status: "pending".to_string(),
-            error: None,
-        };
-        self.tasks.lock().unwrap().insert(id.clone(), task.clone());
+        self.enqueue_batch(kind, src, dst, vec![op])
+    }
+
+    pub fn enqueue_batch(&self, kind: &str, src: &str, dst: &str, ops: Vec<JobOp>) -> String {
+        let job = build_batch_job(kind, src, dst, ops);
+        let id = job.task.id.clone();
+        self.tasks.lock().unwrap().insert(id.clone(), job.task.clone());
         let (lock, cvar) = &*self.pending;
-        lock.lock().unwrap().push_back(Job { task, op });
+        lock.lock().unwrap().push_back(job);
         cvar.notify_one();
         id
     }
@@ -158,9 +199,159 @@ impl TransferQueue {
         false
     }
 
+    pub fn get_task(&self, task_id: &str) -> Option<TransferTask> {
+        self.tasks.lock().unwrap().get(task_id).cloned()
+    }
+
     pub fn get_status(&self, task_id: &str) -> Option<String> {
         self.tasks.lock().unwrap().get(task_id).map(|t| t.status.clone())
     }
+}
+
+fn run_op(op: JobOp) -> Result<(), String> {
+    match op {
+        JobOp::IosDownload { device_id, bundle_id, remote_path, local_path } =>
+            crate::ios_client::ios_download(device_id, bundle_id, remote_path, local_path),
+        JobOp::IosDownloadDir { device_id, bundle_id, remote_path, local_path } =>
+            crate::ios_client::ios_download_dir(device_id, bundle_id, remote_path, local_path),
+        JobOp::IosUpload { device_id, bundle_id, local_path, remote_path } =>
+            crate::ios_client::ios_upload(device_id, bundle_id, local_path, remote_path),
+        JobOp::IosDelete { device_id, bundle_id, remote_path } =>
+            crate::ios_client::ios_delete(device_id, bundle_id, remote_path),
+        JobOp::AndroidDownload { device_id, remote_path, local_path, package } =>
+            crate::android_client::android_download(device_id, remote_path, local_path, package),
+        JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } =>
+            crate::android_client::android_download_dir(device_id, remote_path, local_path, package),
+        JobOp::AndroidUpload { device_id, local_path, remote_path, package } =>
+            crate::android_client::android_upload(device_id, local_path, remote_path, package),
+        JobOp::AndroidDelete { device_id, remote_path, package } =>
+            crate::android_client::android_delete(device_id, remote_path, package),
+    }
+}
+
+fn build_download_ops(device_id: &str, bundle_id: Option<&str>, package: Option<&String>, files: &[FileTransferItem]) -> Vec<JobOp> {
+    files
+        .iter()
+        .map(|file| match (bundle_id, package, file.is_dir) {
+            (Some(bundle_id), _, true) => JobOp::IosDownloadDir {
+                device_id: device_id.to_string(),
+                bundle_id: bundle_id.to_string(),
+                remote_path: file.src.clone(),
+                local_path: file.dst.clone(),
+            },
+            (Some(bundle_id), _, false) => JobOp::IosDownload {
+                device_id: device_id.to_string(),
+                bundle_id: bundle_id.to_string(),
+                remote_path: file.src.clone(),
+                local_path: file.dst.clone(),
+            },
+            (None, Some(package), true) => JobOp::AndroidDownloadDir {
+                device_id: device_id.to_string(),
+                remote_path: file.src.clone(),
+                local_path: file.dst.clone(),
+                package: Some(package.clone()),
+            },
+            (None, Some(package), false) => JobOp::AndroidDownload {
+                device_id: device_id.to_string(),
+                remote_path: file.src.clone(),
+                local_path: file.dst.clone(),
+                package: Some(package.clone()),
+            },
+            (None, None, true) => JobOp::AndroidDownloadDir {
+                device_id: device_id.to_string(),
+                remote_path: file.src.clone(),
+                local_path: file.dst.clone(),
+                package: None,
+            },
+            (None, None, false) => JobOp::AndroidDownload {
+                device_id: device_id.to_string(),
+                remote_path: file.src.clone(),
+                local_path: file.dst.clone(),
+                package: None,
+            },
+        })
+        .collect()
+}
+
+fn prepare_ops(ops: Vec<JobOp>) -> Result<Vec<JobOp>, String> {
+    let mut prepared = Vec::new();
+    for op in ops {
+        match op {
+            JobOp::IosDownloadDir { device_id, bundle_id, remote_path, local_path } => {
+                let files = crate::ios_client::collect_ios_download_files(&device_id, &bundle_id, &remote_path, &local_path)?;
+                prepared.extend(build_ios_download_file_ops(&device_id, &bundle_id, &files));
+            }
+            JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } => {
+                let files = crate::android_client::collect_android_download_files(
+                    &device_id,
+                    &remote_path,
+                    &local_path,
+                    package.clone(),
+                    true,
+                )?;
+                prepared.extend(build_android_download_file_ops(&device_id, package.as_ref(), &files));
+            }
+            op => prepared.push(op),
+        }
+    }
+    Ok(prepared)
+}
+
+fn build_ios_download_file_ops(device_id: &str, bundle_id: &str, files: &[DownloadFile]) -> Vec<JobOp> {
+    files
+        .iter()
+        .map(|file| JobOp::IosDownload {
+            device_id: device_id.to_string(),
+            bundle_id: bundle_id.to_string(),
+            remote_path: file.remote_path.clone(),
+            local_path: file.local_path.clone(),
+        })
+        .collect()
+}
+
+fn build_android_download_file_ops(device_id: &str, package: Option<&String>, files: &[DownloadFile]) -> Vec<JobOp> {
+    files
+        .iter()
+        .map(|file| JobOp::AndroidDownload {
+            device_id: device_id.to_string(),
+            remote_path: file.remote_path.clone(),
+            local_path: file.local_path.clone(),
+            package: package.cloned(),
+        })
+        .collect()
+}
+
+fn build_ios_download_ops(device_id: &str, bundle_id: &str, files: &[FileTransferItem]) -> Vec<JobOp> {
+    build_download_ops(device_id, Some(bundle_id), None, files)
+}
+
+fn build_android_download_ops(device_id: &str, package: Option<&String>, files: &[FileTransferItem]) -> Vec<JobOp> {
+    build_download_ops(device_id, None, package, files)
+}
+
+fn build_task(kind: &str, src: &str, dst: &str, total_files: u64) -> TransferTask {
+    TransferTask {
+        id: Uuid::new_v4().to_string(),
+        kind: kind.to_string(),
+        src: src.to_string(),
+        dst: dst.to_string(),
+        total_files,
+        completed_files: 0,
+        status: "pending".to_string(),
+        error: None,
+    }
+}
+
+fn build_batch_job(kind: &str, src: &str, dst: &str, ops: Vec<JobOp>) -> Job {
+    let total_files = ops.len().max(1) as u64;
+    Job {
+        task: build_task(kind, src, dst, total_files),
+        ops,
+    }
+}
+
+fn update_task_total_files(task: &mut TransferTask, total_files: usize) {
+    task.total_files = total_files.max(1) as u64;
 }
 
 fn emit_progress(handle: &AppHandle, task: &TransferTask) {
@@ -168,16 +359,30 @@ fn emit_progress(handle: &AppHandle, task: &TransferTask) {
         "transfer-progress",
         TransferProgress {
             task_id: task.id.clone(),
-            transferred_bytes: task.transferred_bytes,
-            total_bytes: task.total_bytes,
+            kind: task.kind.clone(),
+            src: task.src.clone(),
+            dst: task.dst.clone(),
+            total_files: task.total_files,
+            completed_files: task.completed_files,
             status: task.status.clone(),
+            error: task.error.clone(),
         },
     );
 }
 
 #[tauri::command]
-pub fn cancel_transfer(task_id: String, state: tauri::State<Arc<TransferQueue>>) -> bool {
-    state.cancel(&task_id)
+pub fn cancel_transfer(
+    task_id: String,
+    state: tauri::State<Arc<TransferQueue>>,
+    handle: AppHandle,
+) -> bool {
+    let cancelled = state.cancel(&task_id);
+    if cancelled {
+        if let Some(task) = state.get_task(&task_id) {
+            emit_progress(&handle, &task);
+        }
+    }
+    cancelled
 }
 
 // Enqueue commands — these are the ONLY way the frontend triggers a file
@@ -218,6 +423,36 @@ pub fn enqueue_ios_upload(
 }
 
 #[tauri::command]
+pub fn enqueue_ios_download_batch(
+    device_id: String,
+    bundle_id: String,
+    files: Vec<FileTransferItem>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let ops = build_ios_download_ops(&device_id, &bundle_id, &files);
+    state.enqueue_batch("download", &format!("{} 个文件", files.len()), "", ops)
+}
+
+#[tauri::command]
+pub fn enqueue_ios_upload_batch(
+    device_id: String,
+    bundle_id: String,
+    files: Vec<FileTransferItem>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let ops = files
+        .iter()
+        .map(|file| JobOp::IosUpload {
+            device_id: device_id.clone(),
+            bundle_id: bundle_id.clone(),
+            local_path: file.src.clone(),
+            remote_path: file.dst.clone(),
+        })
+        .collect();
+    state.enqueue_batch("upload", &format!("{} 个文件", files.len()), "", ops)
+}
+
+#[tauri::command]
 pub fn enqueue_android_download(
     device_id: String,
     remote_path: String,
@@ -251,6 +486,102 @@ pub fn enqueue_android_upload(
     state.enqueue("upload", &local_path, &remote_path, op)
 }
 
+#[tauri::command]
+pub fn enqueue_ios_delete(
+    device_id: String,
+    bundle_id: String,
+    remote_path: String,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let op = JobOp::IosDelete {
+        device_id,
+        bundle_id,
+        remote_path: remote_path.clone(),
+    };
+    state.enqueue("delete", &remote_path, &remote_path, op)
+}
+
+#[tauri::command]
+pub fn enqueue_android_download_batch(
+    device_id: String,
+    files: Vec<FileTransferItem>,
+    package: Option<String>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let ops = build_android_download_ops(&device_id, package.as_ref(), &files);
+    state.enqueue_batch("download", &format!("{} 个文件", files.len()), "", ops)
+}
+
+#[tauri::command]
+pub fn enqueue_android_upload_batch(
+    device_id: String,
+    files: Vec<FileTransferItem>,
+    package: Option<String>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let ops = files
+        .iter()
+        .map(|file| JobOp::AndroidUpload {
+            device_id: device_id.clone(),
+            local_path: file.src.clone(),
+            remote_path: file.dst.clone(),
+            package: package.clone(),
+        })
+        .collect();
+    state.enqueue_batch("upload", &format!("{} 个文件", files.len()), "", ops)
+}
+
+#[tauri::command]
+pub fn enqueue_android_delete(
+    device_id: String,
+    remote_path: String,
+    package: Option<String>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let op = JobOp::AndroidDelete {
+        device_id,
+        remote_path: remote_path.clone(),
+        package,
+    };
+    state.enqueue("delete", &remote_path, &remote_path, op)
+}
+
+#[tauri::command]
+pub fn enqueue_ios_delete_batch(
+    device_id: String,
+    bundle_id: String,
+    remote_paths: Vec<String>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let ops = remote_paths
+        .iter()
+        .map(|remote_path| JobOp::IosDelete {
+            device_id: device_id.clone(),
+            bundle_id: bundle_id.clone(),
+            remote_path: remote_path.clone(),
+        })
+        .collect();
+    state.enqueue_batch("delete", &format!("{} 个文件", remote_paths.len()), "", ops)
+}
+
+#[tauri::command]
+pub fn enqueue_android_delete_batch(
+    device_id: String,
+    remote_paths: Vec<String>,
+    package: Option<String>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let ops = remote_paths
+        .iter()
+        .map(|remote_path| JobOp::AndroidDelete {
+            device_id: device_id.clone(),
+            remote_path: remote_path.clone(),
+            package: package.clone(),
+        })
+        .collect();
+    state.enqueue_batch("delete", &format!("{} 个文件", remote_paths.len()), "", ops)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +604,52 @@ mod tests {
     }
 
     #[test]
+    fn test_task_total_files_can_be_updated_after_directory_expansion() {
+        let mut task = build_task("download", "1 个文件", "", 1);
+        let expanded = vec![
+            DownloadFile { remote_path: "/Photos/a.jpg".to_string(), local_path: "/tmp/Photos/a.jpg".to_string() },
+            DownloadFile { remote_path: "/Photos/b.jpg".to_string(), local_path: "/tmp/Photos/b.jpg".to_string() },
+        ];
+
+        update_task_total_files(&mut task, expanded.len());
+
+        assert_eq!(task.total_files, 2);
+        assert_eq!(task.completed_files, 0);
+        assert_eq!(task.status, "pending");
+    }
+
+    #[test]
+    fn test_build_ios_download_ops_uses_expanded_leaf_files() {
+        let files = vec![FileTransferItem {
+            src: "/Photos/a.jpg".to_string(),
+            dst: "/tmp/Photos/a.jpg".to_string(),
+            is_dir: false,
+        }, FileTransferItem {
+            src: "/Photos/nested/b.jpg".to_string(),
+            dst: "/tmp/Photos/nested/b.jpg".to_string(),
+            is_dir: false,
+        }];
+        let ops = build_ios_download_ops("device-1", "bundle.id", &files);
+
+        assert_eq!(ops.len(), 2);
+        for op in ops {
+            assert!(matches!(op, JobOp::IosDownload { .. }));
+        }
+    }
+
+    #[test]
+    fn test_build_batch_job_uses_one_task_for_multiple_files() {
+        let ops = vec![noop_job(), noop_job(), noop_job()];
+        let job = build_batch_job("download", "3 个文件", "/local", ops);
+
+        assert_eq!(job.task.kind, "download");
+        assert_eq!(job.task.src, "3 个文件");
+        assert_eq!(job.task.total_files, 3);
+        assert_eq!(job.task.completed_files, 0);
+        assert_eq!(job.ops.len(), 3);
+    }
+
+    #[test]
     fn test_enqueue_creates_pending_task_before_worker_picks_it_up() {
         let tasks: Arc<Mutex<HashMap<String, TransferTask>>> = Arc::new(Mutex::new(HashMap::new()));
         let id = Uuid::new_v4().to_string();
@@ -281,8 +658,8 @@ mod tests {
             kind: "download".to_string(),
             src: "/device/file.txt".to_string(),
             dst: "/local/file.txt".to_string(),
-            total_bytes: 1,
-            transferred_bytes: 0,
+            total_files: 1,
+            completed_files: 0,
             status: "pending".to_string(),
             error: None,
         };
@@ -301,8 +678,8 @@ mod tests {
                 kind: "upload".to_string(),
                 src: "/local/file.txt".to_string(),
                 dst: "/device/file.txt".to_string(),
-                total_bytes: 1,
-                transferred_bytes: 0,
+                total_files: 1,
+                completed_files: 0,
                 status: "pending".to_string(),
                 error: None,
             },
@@ -329,8 +706,8 @@ mod tests {
                 kind: "download".to_string(),
                 src: "/device/file.txt".to_string(),
                 dst: "/local/file.txt".to_string(),
-                total_bytes: 1,
-                transferred_bytes: 0,
+                total_files: 1,
+                completed_files: 0,
                 status: "cancelled".to_string(),
                 error: None,
             },
@@ -349,8 +726,8 @@ mod tests {
                 kind: "download".to_string(),
                 src: "/device/file.txt".to_string(),
                 dst: "/local/file.txt".to_string(),
-                total_bytes: 1,
-                transferred_bytes: 0,
+                total_files: 1,
+                completed_files: 0,
                 status: "running".to_string(),
                 error: None,
             },

@@ -23,14 +23,20 @@ pub struct FileEntry {
     pub modified: Option<u64>, // unix timestamp
 }
 
+#[derive(Debug, Clone)]
+pub struct DownloadFile {
+    pub remote_path: String,
+    pub local_path: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferTask {
     pub id: String,
-    pub kind: String, // "upload" | "download"
+    pub kind: String, // "upload" | "download" | "delete"
     pub src: String,
     pub dst: String,
-    pub total_bytes: u64,
-    pub transferred_bytes: u64,
+    pub total_files: u64,
+    pub completed_files: u64,
     pub status: String, // "pending" | "running" | "done" | "error" | "cancelled"
     pub error: Option<String>,
 }
@@ -38,9 +44,13 @@ pub struct TransferTask {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferProgress {
     pub task_id: String,
-    pub transferred_bytes: u64,
-    pub total_bytes: u64,
+    pub kind: String,
+    pub src: String,
+    pub dst: String,
+    pub total_files: u64,
+    pub completed_files: u64,
     pub status: String,
+    pub error: Option<String>,
 }
 
 /// Emitted once per file after `enqueue_ios_file_info` finishes probing it via
