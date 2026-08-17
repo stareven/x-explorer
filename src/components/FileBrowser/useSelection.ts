@@ -1,8 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export function useSelection(items: string[]) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastClicked, setLastClicked] = useState<string | null>(null);
+
+  const itemsKey = items.join("\u0000");
+
+  useEffect(() => {
+    setSelected((prev) => new Set([...prev].filter((name) => items.includes(name))));
+    setLastClicked((prev) => (prev && items.includes(prev) ? prev : null));
+  }, [itemsKey]);
 
   function handleClick(name: string, cmdKey: boolean, shiftKey: boolean) {
     if (cmdKey) {

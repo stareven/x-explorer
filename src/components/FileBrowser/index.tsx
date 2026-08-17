@@ -1,7 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileEntry, parentPath, useStore } from "../../store";
 import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
+import { buildSearchIndex, compareSearchMatches, normalizeSearchQuery, rankSearchIndex } from "../../utils/search";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { Toolbar } from "./Toolbar";
 import { FileList } from "./FileList";
@@ -34,8 +35,22 @@ export function FileBrowser() {
 
   const device = devices.find((d) => d.id === selectedDeviceId);
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
-  const fileNames = files.map((f) => f.name);
-  const { selected, handleClick, selectAll, clearSelection } = useSelection(fileNames);
+  const [fileSearch, setFileSearch] = useState("");
+  const searchTerm = normalizeSearchQuery(fileSearch);
+  const visibleFiles = useMemo(
+    () =>
+      searchTerm
+        ? files
+            .map((file) => ({ file, match: rankSearchIndex(file.search_index ?? buildSearchIndex(file.name), searchTerm) }))
+            .filter((entry): entry is { file: FileEntry; match: NonNullable<typeof entry.match> } => entry.match != null)
+            .sort((a, b) => compareSearchMatches(a.match, b.match) || a.file.name.localeCompare(b.file.name))
+            .map((entry) => entry.file)
+        : files,
+    [files, searchTerm],
+  );
+  const visibleFileNames = visibleFiles.map((f) => f.name);
+  const { selected, handleClick, selectAll, clearSelection } = useSelection(visibleFileNames);
+  const selectedVisibleFiles = visibleFiles.filter((file) => selected.has(file.name));
   const { handleDrop, handleDragOver } = useFileDrop();
 
   useTransferListener();
@@ -111,6 +126,7 @@ export function FileBrowser() {
 
   useEffect(() => {
     let cancelled = false;
+    setFileSearch("");
     reloadFiles().then(() => {
       if (!cancelled) {
         clearSelection();
@@ -189,7 +205,7 @@ export function FileBrowser() {
 
   async function handleExport() {
     if (!device) return;
-    const selectedFiles = files.filter((f) => selected.has(f.name));
+    const selectedFiles = selectedVisibleFiles;
     const destDir = await open({ directory: true });
     if (!destDir || typeof destDir !== "string") return;
     for (const file of selectedFiles) {
@@ -206,8 +222,8 @@ export function FileBrowser() {
     }
   }
 
-  async function handleDelete() {    if (!device || !window.confirm(`删除选中的 ${selected.size} 个文件？`)) return;
-    const selectedFiles = files.filter((f) => selected.has(f.name));
+  async function handleDelete() {    if (!device || !window.confirm(`删除选中的 ${selectedVisibleFiles.length} 个文件？`)) return;
+    const selectedFiles = selectedVisibleFiles;
     for (const file of selectedFiles) {
       try {
         if (device.platform === "ios") {
@@ -255,7 +271,7 @@ export function FileBrowser() {
     >
       <BreadcrumbBar />
       <Toolbar
-        selectedCount={selected.size}
+        selectedCount={selectedVisibleFiles.length}
         onImport={handleImport}
         onExport={handleExport}
         onDelete={handleDelete}
@@ -265,18 +281,20 @@ export function FileBrowser() {
         onUp={() => navigate(parentPath(currentPath))}
         onRefresh={handleRefresh}
         onBookmark={handleAddBookmark}
+        searchValue={fileSearch}
+        onSearchChange={setFileSearch}
       />
       <div className="flex-1 overflow-auto">
         {viewMode === "list" ? (
           <FileList
-            files={files}
+            files={visibleFiles}
             selected={selected}
             onNavigate={navigate}
             onSelect={handleClick}
           />
         ) : (
           <FileGrid
-            files={files}
+            files={visibleFiles}
             selected={selected}
             onNavigate={navigate}
             onSelect={handleClick}

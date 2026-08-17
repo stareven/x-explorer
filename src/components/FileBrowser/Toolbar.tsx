@@ -11,9 +11,11 @@ interface ToolbarProps {
   onUp: () => void;
   onRefresh: () => void;
   onBookmark: () => void;
+  searchValue: string;
+  onSearchChange: (value: string) => void;
 }
 
-export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoUp, onUp, onRefresh, onBookmark }: ToolbarProps) {
+export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoUp, onUp, onRefresh, onBookmark, searchValue, onSearchChange }: ToolbarProps) {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
 
@@ -40,6 +42,13 @@ export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack
       >
         导入
       </button>
+      <input
+        value={searchValue}
+        onChange={(e) => onSearchChange(e.target.value)}
+        placeholder="搜索文件"
+        aria-label="搜索文件"
+        className="w-48 min-w-0 px-2 py-1 text-xs bg-gray-800 text-gray-200 border border-gray-600 rounded placeholder:text-gray-500 focus:outline-none focus:border-blue-500"
+      />
       {selectedCount > 0 && (
         <>
           <button

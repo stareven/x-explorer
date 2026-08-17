@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { buildSearchIndex, SearchIndex } from "../utils/search";
 
 export interface Device {
   id: string;
@@ -18,6 +19,7 @@ export interface FileEntry {
   is_dir: boolean;
   size: number;
   modified?: number;
+  search_index?: SearchIndex;
 }
 
 export interface TransferTask {
@@ -145,7 +147,11 @@ export const useStore = create<StoreState>((set) => ({
       return { navIndex: s.navIndex - 1, currentPath: s.navHistory[s.navIndex - 1] };
     }),
   setFiles: (files) =>
-    set({ files: [...files].sort((a, b) => a.name.localeCompare(b.name)) }),
+    set({
+      files: [...files]
+        .map((file) => ({ ...file, search_index: file.search_index ?? buildSearchIndex(file.name) }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    }),
   patchFileInfo: (path, info) =>
     set((s) => ({
       files: s.files.map((f) => (f.path === path ? { ...f, ...info } : f)),
