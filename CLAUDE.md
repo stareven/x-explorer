@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Project Is
 
-x-explorer is a macOS desktop app for browsing, importing, and exporting files on connected iOS and Android devices. Built with Tauri 2 (Rust backend) + React 19 + TypeScript + Zustand + Tailwind CSS 4.
+x-explorer is a macOS desktop app for browsing, importing, and exporting files on connected iOS and Android devices. The Rust backend shells out to PATH-resolved CLI tools (`idevice_id`, `ideviceinfo`, `ideviceinstaller`, `afcclient`, `adb`) instead of linking native device libraries.
+
+## Runtime Notes
+
+- `src/store/index.ts` owns device selection, navigation history, directory caching, and transfer state in Zustand.
+- `src/components/FileBrowser/index.tsx` coordinates file browsing, drag/drop uploads, toolbar actions, and keyboard selection behavior.
+- The frontend listens for `devices-changed`, `transfer-progress`, and `ios-file-info-ready` events from Tauri.
+- File access rules differ by platform: iOS uses `afcclient --documents <bundle_id>` for app file sharing, while Android uses `adb` or `run-as` depending on the target.
 
 ## Commands
 
