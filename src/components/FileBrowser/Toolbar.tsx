@@ -7,13 +7,15 @@ interface ToolbarProps {
   onDelete: () => void;
   canGoBack: boolean;
   onBack: () => void;
+  canGoForward: boolean;
+  onForward: () => void;
   canGoUp: boolean;
   onUp: () => void;
   onRefresh: () => void;
   onBookmark: () => void;
 }
 
-export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoUp, onUp, onRefresh, onBookmark }: ToolbarProps) {
+export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoForward, onForward, canGoUp, onUp, onRefresh, onBookmark }: ToolbarProps) {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
 
@@ -24,6 +26,9 @@ export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack
     <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-700">
       <button onClick={onBack} disabled={!canGoBack} className={navBtn} aria-label="返回" title="返回">
         ←
+      </button>
+      <button onClick={onForward} disabled={!canGoForward} className={navBtn} aria-label="前进" title="前进">
+        →
       </button>
       <button onClick={onUp} disabled={!canGoUp} className={navBtn} aria-label="回到上级目录" title="回到上级目录">
         ↑
