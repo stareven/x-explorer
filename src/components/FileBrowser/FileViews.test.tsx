@@ -1,8 +1,18 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { BreadcrumbBar } from "./BreadcrumbBar";
+import { AppList } from "../DevicePanel/AppList";
 import { FileList } from "./FileList";
-import { FileEntry, useStore } from "../../store";
+import { Device, FileEntry, useStore } from "../../store";
+import { tauriApi } from "../../hooks/useTauri";
+
+vi.mock("../../hooks/useTauri", () => ({
+  tauriApi: {
+    listAndroidApps: vi.fn(),
+    listAndroidFiles: vi.fn().mockResolvedValue([]),
+  },
+  useTransferListener: vi.fn(),
+  useIosFileInfoListener: vi.fn(),
+}));
 
 const mockFiles: FileEntry[] = [
   { name: "Documents", path: "/Documents", is_dir: true, size: 0 },
@@ -10,15 +20,24 @@ const mockFiles: FileEntry[] = [
 ];
 
 beforeEach(() => {
+  const devices: Device[] = [
+    { id: "device-1", name: "Pixel", platform: "android", status: "connected" },
+  ];
   useStore.setState({
+    devices,
+    selectedDeviceId: "device-1",
     browseTarget: null,
     currentPath: "/",
     navHistory: ["/"],
     navIndex: 0,
     selectedApp: null,
-    selectedDeviceId: null,
     files: [],
+    transfers: [],
+    viewMode: "list",
+    favoriteAppIds: [],
+    bookmarks: [],
   });
+  vi.clearAllMocks();
 });
 
 describe("FileList", () => {
@@ -63,17 +82,12 @@ describe("FileList", () => {
     expect(screen.getByText("1.0 KB")).toBeInTheDocument();
   });
 
-  it("navigates breadcrumb root to sdcard for external storage", () => {
-    useStore.setState({
-      browseTarget: { kind: "external-storage" },
-      currentPath: "/sdcard/Download",
-      navHistory: ["/sdcard", "/sdcard/Download"],
-      navIndex: 1,
-    });
+  it("does not show android app names in the sidebar", async () => {
+    render(<AppList />);
 
-    render(<BreadcrumbBar />);
-    fireEvent.click(screen.getByText("~"));
-
-    expect(useStore.getState().currentPath).toBe("/sdcard");
+    expect(screen.getAllByText("外部存储")).toHaveLength(2);
+    expect(screen.queryByText("Baidu Maps")).toBeNull();
+    expect(vi.mocked(tauriApi.listAndroidApps)).not.toHaveBeenCalled();
   });
 });
+

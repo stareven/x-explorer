@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileEntry, parentPath, useStore } from "../../store";
 import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
@@ -41,6 +41,7 @@ export function FileBrowser() {
   const { handleDrop, handleDragOver } = useFileDrop();
   useIosFileInfoListener();
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   const refreshedTransfers = useRef(new Set<string>());
 
   useEffect(() => {
@@ -82,6 +83,7 @@ export function FileBrowser() {
     const key = cacheKey(device.platform, device.id, pkg, currentPath);
     // Serve cached entries immediately so revisiting a directory is instant;
     // the fresh fetch below replaces them once it lands.
+    setLoadError(null);
     const cached = opts.useCache ? listCache.get(key) : undefined;
     if (cached && !isStale()) {
       setFiles(cached);
@@ -90,13 +92,21 @@ export function FileBrowser() {
     // One retry on failure: rapid navigation can spawn several concurrent
     // afclient/adb subprocesses and occasionally one loses the race for the
     // USB/lockdownd connection; a short backoff usually recovers it.
+    let failureMessage: string | null = null;
     const list = await fetchList().catch((first) =>
       sleep(400).then(fetchList).catch((second) => {
+        failureMessage =
+          second instanceof Error
+            ? second.message
+            : first instanceof Error
+              ? first.message
+              : "加载失败";
         console.error("Failed to load files:", first, second);
         return null;
       })
     );
     if (list && !isStale()) {
+      setLoadError(null);
       // Fresh iOS entries carry placeholder metadata (is_dir:false, no
       // size/mtime) until probed. Replace each placeholder with the
       // already-probed metadata from cache when the entry existed before —
@@ -112,6 +122,9 @@ export function FileBrowser() {
       setFiles(merged);
       listCache.set(key, merged);
       enqueueMissingIosInfo(merged);
+    } else if (!isStale() && failureMessage) {
+      setFiles([]);
+      setLoadError(failureMessage);
     }
   }
 
@@ -288,6 +301,11 @@ export function FileBrowser() {
         onRefresh={handleRefresh}
         onBookmark={handleAddBookmark}
       />
+      {loadError && (
+        <div className="px-3 py-2 text-sm text-red-300 border-b border-red-900 bg-red-950/40">
+          {loadError}
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         {viewMode === "list" ? (
           <FileList

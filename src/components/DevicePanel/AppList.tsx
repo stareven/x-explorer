@@ -19,13 +19,14 @@ export function AppList() {
       setApps([]);
       return;
     }
+    if (device.platform !== "ios") {
+      setApps([]);
+      return;
+    }
     let cancelled = false;
     const load = async () => {
       try {
-        const list =
-          device.platform === "ios"
-            ? await tauriApi.listIosApps(device.id)
-            : await tauriApi.listAndroidApps(device.id);
+        const list = await tauriApi.listIosApps(device.id);
         if (!cancelled) {
           setApps(list.sort((a, b) => a.name.localeCompare(b.name)));
         }
@@ -81,10 +82,10 @@ export function AppList() {
     );
   }
 
-  return (
-    <div className="p-2 border-t border-gray-700">
-      <p className="text-xs font-semibold text-gray-400 uppercase px-2 mb-1">应用</p>
-      {device.platform === "android" && (
+  if (device.platform === "android") {
+    return (
+      <div className="p-2 border-t border-gray-700">
+        <p className="text-xs font-semibold text-gray-400 uppercase px-2 mb-1">外部存储</p>
         <button
           onClick={() => setBrowseTarget({ kind: "external-storage" })}
           className={`w-full text-left px-3 py-1.5 rounded text-xs truncate flex items-center gap-2 ${
@@ -96,7 +97,13 @@ export function AppList() {
           <span>💾</span>
           <span>外部存储</span>
         </button>
-      )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-2 border-t border-gray-700">
+      <p className="text-xs font-semibold text-gray-400 uppercase px-2 mb-1">应用</p>
       {favorites.length > 0 && (
         <>
           <p className="text-xs text-gray-500 px-2 mt-2 mb-1">常用</p>
