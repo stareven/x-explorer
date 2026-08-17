@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileEntry, parentPath, useStore } from "../../store";
 import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
+import { buildSearchIndex, compareSearchMatches, normalizeSearchQuery, rankSearchIndex } from "../../utils/search";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { Toolbar } from "./Toolbar";
 import { FileList } from "./FileList";
@@ -29,35 +30,31 @@ export function FileBrowser() {
   const navigate = useStore((s) => s.navigate);
   const goBack = useStore((s) => s.goBack);
   const navIndex = useStore((s) => s.navIndex);
-  const transfers = useStore((s) => s.transfers);
   const viewMode = useStore((s) => s.viewMode);
   const addBookmark = useStore((s) => s.addBookmark);
 
   const device = devices.find((d) => d.id === selectedDeviceId);
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
-  const fileNames = files.map((f) => f.name);
-  const { selected, handleClick, selectAll, clearSelection } = useSelection(fileNames);
-  useTransferListener();
+  const [fileSearch, setFileSearch] = useState("");
+  const searchTerm = normalizeSearchQuery(fileSearch);
+  const visibleFiles = useMemo(
+    () =>
+      searchTerm
+        ? files
+            .map((file) => ({ file, match: rankSearchIndex(file.search_index ?? buildSearchIndex(file.name), searchTerm) }))
+            .filter((entry): entry is { file: FileEntry; match: NonNullable<typeof entry.match> } => entry.match != null)
+            .sort((a, b) => compareSearchMatches(a.match, b.match) || a.file.name.localeCompare(b.file.name))
+            .map((entry) => entry.file)
+        : files,
+    [files, searchTerm],
+  );
+  const visibleFileNames = visibleFiles.map((f) => f.name);
+  const { selected, handleClick, selectAll, clearSelection } = useSelection(visibleFileNames);
+  const selectedVisibleFiles = visibleFiles.filter((file) => selected.has(file.name));
   const { handleDrop, handleDragOver } = useFileDrop();
+
+  useTransferListener();
   useIosFileInfoListener();
-
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const refreshedTransfers = useRef(new Set<string>());
-
-  useEffect(() => {
-    const terminalTransfers = transfers.filter(
-      (task) =>
-        task.status === "done" || task.status === "error" || task.status === "cancelled"
-    );
-    const pendingRefresh = terminalTransfers.some((task) => {
-      if (refreshedTransfers.current.has(task.id)) return false;
-      refreshedTransfers.current.add(task.id);
-      return true;
-    });
-    if (pendingRefresh) {
-      reloadFiles({ useCache: false });
-    }
-  }, [currentPath, device?.id, browseTarget, transfers]);
 
   // Latest-call-wins guard for async reloads: each reloadFiles call bumps the
   // sequence and discards older in-flight results. Covers both navigation
@@ -83,7 +80,6 @@ export function FileBrowser() {
     const key = cacheKey(device.platform, device.id, pkg, currentPath);
     // Serve cached entries immediately so revisiting a directory is instant;
     // the fresh fetch below replaces them once it lands.
-    setLoadError(null);
     const cached = opts.useCache ? listCache.get(key) : undefined;
     if (cached && !isStale()) {
       setFiles(cached);
@@ -92,21 +88,13 @@ export function FileBrowser() {
     // One retry on failure: rapid navigation can spawn several concurrent
     // afclient/adb subprocesses and occasionally one loses the race for the
     // USB/lockdownd connection; a short backoff usually recovers it.
-    let failureMessage: string | null = null;
     const list = await fetchList().catch((first) =>
       sleep(400).then(fetchList).catch((second) => {
-        failureMessage =
-          second instanceof Error
-            ? second.message
-            : first instanceof Error
-              ? first.message
-              : "加载失败";
         console.error("Failed to load files:", first, second);
         return null;
       })
     );
     if (list && !isStale()) {
-      setLoadError(null);
       // Fresh iOS entries carry placeholder metadata (is_dir:false, no
       // size/mtime) until probed. Replace each placeholder with the
       // already-probed metadata from cache when the entry existed before —
@@ -122,9 +110,6 @@ export function FileBrowser() {
       setFiles(merged);
       listCache.set(key, merged);
       enqueueMissingIosInfo(merged);
-    } else if (!isStale() && failureMessage) {
-      setFiles([]);
-      setLoadError(failureMessage);
     }
   }
 
@@ -141,6 +126,7 @@ export function FileBrowser() {
 
   useEffect(() => {
     let cancelled = false;
+    setFileSearch("");
     reloadFiles().then(() => {
       if (!cancelled) {
         clearSelection();
@@ -202,60 +188,55 @@ export function FileBrowser() {
     const paths = await open({ multiple: true });
     if (!paths || !device) return;
     const pathList = Array.isArray(paths) ? paths : [paths];
-    const uploadFiles = pathList.map((localPath) => {
+    for (const localPath of pathList) {
       const fileName = localPath.split("/").pop()!;
-      return {
-        src: localPath,
-        dst: `${currentPath.replace(/\/$/, "")}/${fileName}`,
-        is_dir: false,
-      };
-    });
-    try {
-      if (device.platform === "ios") {
-        await tauriApi.enqueueIosUploadBatch(device.id, pkg!, uploadFiles);
-      } else {
-        await tauriApi.enqueueAndroidUploadBatch(device.id, uploadFiles, pkg);
+      const remotePath = `${currentPath.replace(/\/$/, "")}/${fileName}`;
+      try {
+        if (device.platform === "ios") {
+          await tauriApi.enqueueIosUpload(device.id, pkg!, localPath, remotePath);
+        } else {
+          await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
+        }
+      } catch (e) {
+        console.error(`Failed to enqueue upload for ${fileName}:`, e);
       }
-    } catch (e) {
-      console.error("Failed to enqueue upload:", e);
     }
   }
 
   async function handleExport() {
     if (!device) return;
-    const selectedFiles = files.filter((f) => selected.has(f.name));
+    const selectedFiles = selectedVisibleFiles;
     const destDir = await open({ directory: true });
     if (!destDir || typeof destDir !== "string") return;
-    const downloadFiles = selectedFiles.map((file) => ({
-      src: file.path,
-      dst: `${destDir}/${file.name}`,
-      is_dir: file.is_dir,
-    }));
-    try {
-      if (device.platform === "ios") {
-        await tauriApi.enqueueIosDownloadBatch(device.id, pkg!, downloadFiles);
-      } else {
-        await tauriApi.enqueueAndroidDownloadBatch(device.id, downloadFiles, pkg);
+    for (const file of selectedFiles) {
+      const localPath = `${destDir}/${file.name}`;
+      try {
+        if (device.platform === "ios") {
+          await tauriApi.enqueueIosDownload(device.id, pkg!, file.path, localPath);
+        } else {
+          await tauriApi.enqueueAndroidDownload(device.id, file.path, localPath, pkg);
+        }
+      } catch (e) {
+        console.error(`Failed to enqueue download for ${file.name}:`, e);
       }
-    } catch (e) {
-      console.error("Failed to enqueue download:", e);
     }
   }
 
-  async function handleDelete() {
-    if (!device || !window.confirm(`删除选中的 ${selected.size} 个文件？`)) return;
-    const selectedFiles = files.filter((f) => selected.has(f.name));
-    const remotePaths = selectedFiles.map((file) => file.path);
-    try {
-      if (device.platform === "ios") {
-        await tauriApi.iosDeleteBatch(device.id, pkg!, remotePaths);
-      } else {
-        await tauriApi.androidDeleteBatch(device.id, remotePaths, pkg);
+  async function handleDelete() {    if (!device || !window.confirm(`删除选中的 ${selectedVisibleFiles.length} 个文件？`)) return;
+    const selectedFiles = selectedVisibleFiles;
+    for (const file of selectedFiles) {
+      try {
+        if (device.platform === "ios") {
+          await tauriApi.iosDelete(device.id, pkg!, file.path);
+        } else {
+          await tauriApi.androidDelete(device.id, file.path, pkg);
+        }
+      } catch (e) {
+        console.error(`Failed to delete ${file.name}:`, e);
       }
-    } catch (e) {
-      console.error("Failed to enqueue delete:", e);
     }
     clearSelection();
+    await reloadFiles();
   }
 
   if (!device) {
@@ -290,7 +271,7 @@ export function FileBrowser() {
     >
       <BreadcrumbBar />
       <Toolbar
-        selectedCount={selected.size}
+        selectedCount={selectedVisibleFiles.length}
         onImport={handleImport}
         onExport={handleExport}
         onDelete={handleDelete}
@@ -300,23 +281,20 @@ export function FileBrowser() {
         onUp={() => navigate(parentPath(currentPath))}
         onRefresh={handleRefresh}
         onBookmark={handleAddBookmark}
+        searchValue={fileSearch}
+        onSearchChange={setFileSearch}
       />
-      {loadError && (
-        <div className="px-3 py-2 text-sm text-red-300 border-b border-red-900 bg-red-950/40">
-          {loadError}
-        </div>
-      )}
       <div className="flex-1 overflow-auto">
         {viewMode === "list" ? (
           <FileList
-            files={files}
+            files={visibleFiles}
             selected={selected}
             onNavigate={navigate}
             onSelect={handleClick}
           />
         ) : (
           <FileGrid
-            files={files}
+            files={visibleFiles}
             selected={selected}
             onNavigate={navigate}
             onSelect={handleClick}
