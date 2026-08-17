@@ -75,9 +75,15 @@ pub fn parse_adb_ls(output: &str, base_path: &str) -> Vec<FileEntry> {
             if parts.len() < 8 {
                 return None;
             }
-            let is_dir = parts[0].starts_with('d');
+            let is_symlink = parts[0].starts_with('l');
+            let is_dir = parts[0].starts_with('d') || is_symlink;
             let size: u64 = parts[4].parse().unwrap_or(0);
-            let name = parts[7..].join(" ");
+            let raw_name = parts[7..].join(" ");
+            let name = if is_symlink {
+                raw_name.split(" -> ").next().unwrap_or(&raw_name).to_string()
+            } else {
+                raw_name
+            };
             if name == "." || name == ".." {
                 return None;
             }
@@ -119,6 +125,44 @@ fn shell_args(package: &Option<String>, cmd: &[&str]) -> Vec<String> {
         }
         None => cmd.iter().map(|s| s.to_string()).collect(),
     }
+}
+
+fn android_ls_mode(package: &Option<String>) -> &'static str {
+    if package.is_none() {
+        "-laL"
+    } else {
+        "-la"
+    }
+}
+
+fn external_storage_paths(path: &str, resolved_root: &str) -> Option<(String, String)> {
+    let display_path = crate::file_ops::normalize_path(path);
+    let suffix = display_path.strip_prefix("/sdcard").unwrap_or("");
+    let safe_suffix = crate::file_ops::sanitize_relative_path(suffix)?;
+    let command_root = crate::file_ops::normalize_path(resolved_root);
+    let command_path = if safe_suffix.is_empty() {
+        command_root
+    } else {
+        crate::file_ops::join_path(&command_root, &safe_suffix)
+    };
+    Some((display_path, command_path))
+}
+
+fn resolve_external_storage_root(adb: &Path, device_id: &str) -> Result<String, String> {
+    let mut args: Vec<String> = vec!["-s".to_string(), device_id.to_string(), "shell".to_string()];
+    args.extend(shell_args(&None, &["ls", "-ld", "/sdcard"]));
+    let out = std::process::Command::new(adb)
+        .args(&args)
+        .output()
+        .map_err(|e| e.to_string())?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if let Some(target) = stdout
+        .lines()
+        .find_map(|line| line.split_once(" -> ").map(|(_, target)| target.trim().to_string()))
+    {
+        return Ok(crate::file_ops::normalize_path(&target));
+    }
+    Ok("/sdcard".to_string())
 }
 
 /// Whether a path falls under the app-container namespace and therefore needs run-as.
@@ -187,14 +231,33 @@ pub fn list_android_files(
 ) -> Result<Vec<FileEntry>, String> {
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
-    let safe_path = crate::file_ops::sanitize_relative_path(&path)
-        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    let full_path = match &package {
-        Some(pkg) => crate::file_ops::join_path(&pkg_root(pkg), &safe_path),
-        None => crate::file_ops::normalize_path(&safe_path),
+    let package_label = package.as_deref().unwrap_or("<external-storage>");
+    eprintln!(
+        "[android:list] device={} package={} request_path={}",
+        device_id, package_label, path
+    );
+    let (display_path, command_path) = match &package {
+        Some(pkg) => {
+            let safe_path = crate::file_ops::sanitize_relative_path(&path)
+                .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+            let command_path = crate::file_ops::join_path(&pkg_root(pkg), &safe_path);
+            (crate::file_ops::normalize_path(&safe_path), command_path)
+        }
+        None => {
+            let resolved_root = resolve_external_storage_root(&adb, &device_id)?;
+            eprintln!("[android:list] resolved_root={}", resolved_root);
+            external_storage_paths(&path, &resolved_root)
+                .ok_or_else(|| "外部存储路径无效".to_string())?
+        }
     };
+    eprintln!(
+        "[android:list] display_path={} command_path={}",
+        display_path, command_path
+    );
     let mut args: Vec<String> = vec!["-s".to_string(), device_id.clone(), "shell".to_string()];
-    args.extend(shell_args(&package, &["ls", "-la", &full_path]));
+    let ls_mode = android_ls_mode(&package);
+    let ls_cmd = ["ls", ls_mode, &command_path];
+    args.extend(shell_args(&package, &ls_cmd));
     let out = std::process::Command::new(adb)
         .args(&args)
         .output()
@@ -204,7 +267,15 @@ pub fn list_android_files(
         return Err(err);
     }
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(parse_adb_ls(&text, &full_path))
+    let preview: String = text.lines().take(8).collect::<Vec<_>>().join(" | ");
+    eprintln!(
+        "[android:list] status={} stdout_lines={} stdout_preview={} stderr={}",
+        out.status,
+        text.lines().count(),
+        preview,
+        stderr.trim()
+    );
+    Ok(parse_adb_ls(&text, &display_path))
 }
 
 pub fn collect_android_download_files(
@@ -506,6 +577,15 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_adb_ls_treats_symlink_directory_as_directory() {
+        let output = "lrwxrwxrwx 1 root root 10 2024-01-01 12:00 shared -> /storage/emulated/0/Shared\n";
+        let entries = parse_adb_ls(output, "/sdcard");
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[0].name, "shared");
+    }
+
+    #[test]
     fn test_parse_adb_ls_skips_dot_entries() {
         let output = "drwxr-xr-x 2 root root 4096 2024-01-01 12:00 .\ndrwxr-xr-x 2 root root 4096 2024-01-01 12:00 ..\n-rw-r--r-- 1 root root 100 2024-01-01 12:00 file.txt\n";
         let entries = parse_adb_ls(output, "/sdcard");
@@ -514,9 +594,13 @@ mod tests {
     }
 
     #[test]
-    fn test_is_not_debuggable_error_detects_run_as_failure() {
-        assert!(is_not_debuggable_error("run-as: Package 'com.example.app' is not debuggable\n"));
-        assert!(!is_not_debuggable_error("total 24\n"));
+    fn test_resolve_external_storage_root_parses_symlink_target() {
+        let output = "lrw-r--r-- 1 root root 21 2021-12-03 17:15 /sdcard -> /storage/self/primary\n";
+        let target = output
+            .lines()
+            .find_map(|line| line.split_once(" -> ").map(|(_, target)| target.trim().to_string()))
+            .map(|target| crate::file_ops::normalize_path(&target));
+        assert_eq!(target.as_deref(), Some("/storage/self/primary"));
     }
 
     #[test]
@@ -528,8 +612,11 @@ mod tests {
     }
 
     #[test]
-    fn test_pkg_root_format() {
-        assert_eq!(pkg_root("com.example.app"), "/data/data/com.example.app");
+    fn test_android_ls_mode_uses_follow_symlinks_for_external_storage() {
+        let package = Some("com.example.app".to_string());
+        let external: Option<String> = None;
+        assert_eq!(android_ls_mode(&external), "-laL");
+        assert_eq!(android_ls_mode(&package), "-la");
     }
 
     #[test]

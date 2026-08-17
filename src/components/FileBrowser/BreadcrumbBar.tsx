@@ -2,8 +2,10 @@ import { useStore } from "../../store";
 
 export function BreadcrumbBar() {
   const currentPath = useStore((s) => s.currentPath);
+  const browseTarget = useStore((s) => s.browseTarget);
   const navigate = useStore((s) => s.navigate);
 
+  const rootPath = browseTarget?.kind === "external-storage" ? "/sdcard" : "/";
   const parts = currentPath.split("/").filter(Boolean);
 
   const navigateTo = (index: number) => {
@@ -14,7 +16,7 @@ export function BreadcrumbBar() {
   return (
     <div className="flex items-center gap-1 px-3 py-2 text-sm text-gray-300 border-b border-gray-700">
       <button
-        onClick={() => navigate("/")}
+        onClick={() => navigate(rootPath)}
         className="hover:text-white text-gray-400"
       >
         ~

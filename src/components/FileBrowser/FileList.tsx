@@ -8,6 +8,16 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
+function pad(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
+function formatModifiedTime(seconds?: number): string {
+  if (seconds == null) return "—";
+  const date = new Date(seconds * 1000);
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 interface FileListProps {
   files: FileEntry[];
   selected: Set<string>;
@@ -22,6 +32,7 @@ export function FileList({ files, selected, onNavigate, onSelect }: FileListProp
         <tr className="text-xs text-gray-500 border-b border-gray-700">
           <th className="text-left px-3 py-1 font-normal">名称</th>
           <th className="text-right px-3 py-1 font-normal w-24">大小</th>
+          <th className="text-right px-3 py-1 font-normal w-40">修改时间</th>
         </tr>
       </thead>
       <tbody>
@@ -38,8 +49,11 @@ export function FileList({ files, selected, onNavigate, onSelect }: FileListProp
               <span>{file.is_dir ? "📁" : "📄"}</span>
               {file.name}
             </td>
-            <td className="px-3 py-1.5 text-right text-gray-500 text-xs">
+            <td className="px-3 py-1.5 text-right text-gray-500 text-xs whitespace-nowrap">
               {file.is_dir ? "—" : formatSize(file.size)}
+            </td>
+            <td className="px-3 py-1.5 text-right text-gray-500 text-xs whitespace-nowrap">
+              {formatModifiedTime(file.modified)}
             </td>
           </tr>
         ))}

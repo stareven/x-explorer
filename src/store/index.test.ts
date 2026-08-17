@@ -106,7 +106,7 @@ describe("useStore", () => {
     });
     expect(result.current.browseTarget).toEqual({ kind: "external-storage" });
     expect(result.current.selectedApp).toBeNull();
-    expect(result.current.currentPath).toBe("/");
+    expect(result.current.currentPath).toBe("/sdcard");
     expect(result.current.files).toEqual([]);
   });
 });

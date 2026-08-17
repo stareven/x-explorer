@@ -126,8 +126,8 @@ export const useStore = create<StoreState>((set) => ({
     set({
       browseTarget: target,
       selectedApp: target?.kind === "app" ? target.app : null,
-      currentPath: "/",
-      navHistory: ["/"],
+      currentPath: target?.kind === "external-storage" ? "/sdcard" : "/",
+      navHistory: [target?.kind === "external-storage" ? "/sdcard" : "/"],
       navIndex: 0,
       files: [],
     }),
