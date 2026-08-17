@@ -9,6 +9,8 @@ describe("useStore", () => {
       selectedDeviceId: null,
       selectedApp: null,
       currentPath: "/",
+      navHistory: ["/"],
+      navIndex: 0,
       files: [],
       transfers: [],
       viewMode: "list",
@@ -38,6 +40,33 @@ describe("useStore", () => {
       result.current.setCurrentPath("/Documents/images");
     });
     expect(result.current.currentPath).toBe("/Documents/images");
+  });
+
+  it("should go back and forward through navigation history", () => {
+    const { result } = renderHook(() => useStore());
+
+    act(() => {
+      result.current.navigate("/Documents");
+      result.current.navigate("/Documents/images");
+      result.current.goBack();
+    });
+
+    expect(result.current.currentPath).toBe("/Documents");
+    expect(result.current.navIndex).toBe(1);
+
+    act(() => {
+      result.current.goForward();
+    });
+
+    expect(result.current.currentPath).toBe("/Documents/images");
+    expect(result.current.navIndex).toBe(2);
+
+    act(() => {
+      result.current.goForward();
+    });
+
+    expect(result.current.currentPath).toBe("/Documents/images");
+    expect(result.current.navIndex).toBe(2);
   });
 
   it("should insert a new transfer and update it in place on repeated upsert with same id", () => {

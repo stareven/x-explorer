@@ -81,6 +81,7 @@ interface StoreState {
   setCurrentPath: (path: string) => void;
   navigate: (path: string) => void;
   goBack: () => void;
+  goForward: () => void;
   setFiles: (files: FileEntry[]) => void;
   patchFileInfo: (path: string, info: { is_dir: boolean; size: number; modified?: number }) => void;
   upsertTransfer: (task: TransferTask) => void;
@@ -135,7 +136,7 @@ export const useStore = create<StoreState>((set) => ({
     }),
   setCurrentPath: (path) => set({ currentPath: path }),
   // Navigation with history: truncates any forward entries (like a browser)
-  // and records the new path so goBack can walk the stack.
+  // and records the new path so back/forward can walk the stack.
   navigate: (path) =>
     set((s) => {
       const history = [...s.navHistory.slice(0, s.navIndex + 1), path];
@@ -145,6 +146,11 @@ export const useStore = create<StoreState>((set) => ({
     set((s) => {
       if (s.navIndex === 0) return {};
       return { navIndex: s.navIndex - 1, currentPath: s.navHistory[s.navIndex - 1] };
+    }),
+  goForward: () =>
+    set((s) => {
+      if (s.navIndex >= s.navHistory.length - 1) return {};
+      return { navIndex: s.navIndex + 1, currentPath: s.navHistory[s.navIndex + 1] };
     }),
   setFiles: (files) =>
     set({

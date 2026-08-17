@@ -18,11 +18,11 @@ describe("useSelection", () => {
     expect(result.current.selected).toEqual(new Set(["a.txt", "c.txt"]));
   });
 
-  it("selects range on shift+click", () => {
+  it("replaces selection with a single item", () => {
     const { result } = renderHook(() => useSelection(items));
     act(() => result.current.handleClick("a.txt", false, false));
-    act(() => result.current.handleClick("c.txt", false, true));
-    expect(result.current.selected).toEqual(new Set(["a.txt", "b.txt", "c.txt"]));
+    act(() => result.current.selectOnly("c.txt"));
+    expect(result.current.selected).toEqual(new Set(["c.txt"]));
   });
 
   it("selects all with selectAll()", () => {

@@ -1,3 +1,4 @@
+import { MouseEvent as ReactMouseEvent } from "react";
 import { FileEntry } from "../../store";
 
 function formatSize(bytes: number): string {
@@ -23,9 +24,10 @@ interface FileListProps {
   selected: Set<string>;
   onNavigate: (path: string) => void;
   onSelect: (name: string, cmdKey: boolean, shiftKey: boolean) => void;
+  onContextMenu: (name: string, event: ReactMouseEvent<HTMLTableRowElement>) => void;
 }
 
-export function FileList({ files, selected, onNavigate, onSelect }: FileListProps) {
+export function FileList({ files, selected, onNavigate, onSelect, onContextMenu }: FileListProps) {
   return (
     <table className="w-full text-sm text-gray-300">
       <thead>
@@ -39,6 +41,8 @@ export function FileList({ files, selected, onNavigate, onSelect }: FileListProp
         {files.map((file) => (
           <tr
             key={file.path}
+            data-file-entry
+            onContextMenu={(e) => onContextMenu(file.name, e)}
             onClick={(e) => onSelect(file.name, e.metaKey, e.shiftKey)}
             onDoubleClick={() => file.is_dir && onNavigate(file.path)}
             className={`cursor-pointer hover:bg-gray-700 ${

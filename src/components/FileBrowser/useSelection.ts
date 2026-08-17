@@ -30,6 +30,11 @@ export function useSelection(items: string[]) {
     setLastClicked(name);
   }
 
+  function selectOnly(name: string) {
+    setSelected(new Set([name]));
+    setLastClicked(name);
+  }
+
   function selectAll() {
     setSelected(new Set(items));
   }
@@ -38,5 +43,5 @@ export function useSelection(items: string[]) {
     setSelected(new Set());
   }
 
-  return { selected, handleClick, selectAll, clearSelection };
+  return { selected, handleClick, selectOnly, selectAll, clearSelection };
 }

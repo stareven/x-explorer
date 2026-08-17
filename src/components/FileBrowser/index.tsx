@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { FileEntry, parentPath, useStore } from "../../store";
 import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
@@ -9,6 +9,8 @@ import { FileList } from "./FileList";
 import { FileGrid } from "./FileGrid";
 import { useSelection } from "./useSelection";
 import { useFileDrop } from "./useFileDrop";
+import { getFileBrowserShortcutAction } from "./shortcuts";
+import { FileBrowserContextMenu } from "./FileBrowserContextMenu";
 
 // Stale-while-revalidate directory listing cache: revisiting a previously
 // browsed path renders the cached entries instantly while a fresh listing is
@@ -29,13 +31,20 @@ export function FileBrowser() {
   const setFiles = useStore((s) => s.setFiles);
   const navigate = useStore((s) => s.navigate);
   const goBack = useStore((s) => s.goBack);
+  const goForward = useStore((s) => s.goForward);
   const navIndex = useStore((s) => s.navIndex);
+  const navHistory = useStore((s) => s.navHistory);
+  const canGoBack = navIndex > 0;
+  const canGoForward = navIndex < navHistory.length - 1;
   const viewMode = useStore((s) => s.viewMode);
+  const bookmarks = useStore((s) => s.bookmarks);
   const addBookmark = useStore((s) => s.addBookmark);
+  const removeBookmark = useStore((s) => s.removeBookmark);
 
   const device = devices.find((d) => d.id === selectedDeviceId);
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
   const [fileSearch, setFileSearch] = useState("");
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; actions: { label: string; onAction: () => void }[] } | null>(null);
   const searchTerm = normalizeSearchQuery(fileSearch);
   const visibleFiles = useMemo(
     () =>
@@ -49,7 +58,7 @@ export function FileBrowser() {
     [files, searchTerm],
   );
   const visibleFileNames = visibleFiles.map((f) => f.name);
-  const { selected, handleClick, selectAll, clearSelection } = useSelection(visibleFileNames);
+  const { selected, handleClick, selectOnly, selectAll, clearSelection } = useSelection(visibleFileNames);
   const selectedVisibleFiles = visibleFiles.filter((file) => selected.has(file.name));
   const { handleDrop, handleDragOver } = useFileDrop();
 
@@ -158,14 +167,55 @@ export function FileBrowser() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key === "a") {
-        e.preventDefault();
-        selectAll();
+      const shortcut = getFileBrowserShortcutAction(e);
+      if (!shortcut) return;
+
+      e.preventDefault();
+      if ((shortcut === "download" || shortcut === "delete") && selected.size === 0) return;
+
+      switch (shortcut) {
+        case "back":
+          if (canGoBack) goBack();
+          break;
+        case "forward":
+          if (canGoForward) goForward();
+          break;
+        case "up":
+          if (currentPath !== "/") navigate(parentPath(currentPath));
+          break;
+        case "bookmark":
+          handleToggleBookmark();
+          break;
+        case "upload":
+          void handleImport();
+          break;
+        case "download":
+          void handleExport();
+          break;
+        case "delete":
+          void handleDelete();
+          break;
+        case "select-all":
+          selectAll();
+          break;
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [selectAll]);
+  }, [
+    canGoBack,
+    canGoForward,
+    currentPath,
+    goBack,
+    goForward,
+    handleDelete,
+    handleExport,
+    handleImport,
+    handleToggleBookmark,
+    navigate,
+    selectAll,
+    selected.size,
+  ]);
 
   // Manual refresh: drop the cache for the current directory so the reload
   // neither serves nor merges stale metadata — sizes/mtimes are re-probed.
@@ -175,13 +225,24 @@ export function FileBrowser() {
     reloadFiles({ useCache: false });
   }
 
-  function handleAddBookmark() {
+  function handleToggleBookmark() {
     if (!device || !browseTarget) return;
-    addBookmark({
+    const bookmark = {
       platform: device.platform,
       app: browseTarget.kind === "app" ? browseTarget.app : null,
       path: currentPath,
-    });
+    };
+    const exists = bookmarks.some(
+      (b) =>
+        b.platform === bookmark.platform &&
+        (b.app?.bundle_id ?? "") === (bookmark.app?.bundle_id ?? "") &&
+        b.path === bookmark.path,
+    );
+    if (exists) {
+      removeBookmark(bookmark);
+      return;
+    }
+    addBookmark(bookmark);
   }
 
   async function handleImport() {
@@ -200,6 +261,35 @@ export function FileBrowser() {
       } catch (e) {
         console.error(`Failed to enqueue upload for ${fileName}:`, e);
       }
+    }
+  }
+
+  function handleBackgroundContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("[data-file-entry]")) return;
+    event.preventDefault();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      actions: [{ label: "导入", onAction: handleImport }],
+    });
+  }
+
+  function handleFileContextMenu(name: string, event: ReactMouseEvent) {
+    const target = event.target as HTMLElement | null;
+    if (!selected.has(name)) {
+      selectOnly(name);
+    }
+    if (target?.closest("[data-file-entry]")) {
+      event.preventDefault();
+      setContextMenu({
+        x: event.clientX,
+        y: event.clientY,
+        actions: [
+          { label: "导出", onAction: handleExport },
+          { label: "删除", onAction: handleDelete },
+        ],
+      });
     }
   }
 
@@ -275,22 +365,29 @@ export function FileBrowser() {
         onImport={handleImport}
         onExport={handleExport}
         onDelete={handleDelete}
-        canGoBack={navIndex > 0}
+        canGoBack={canGoBack}
         onBack={goBack}
+        canGoForward={canGoForward}
+        onForward={goForward}
         canGoUp={currentPath !== "/"}
         onUp={() => navigate(parentPath(currentPath))}
         onRefresh={handleRefresh}
-        onBookmark={handleAddBookmark}
+        onBookmark={handleToggleBookmark}
         searchValue={fileSearch}
         onSearchChange={setFileSearch}
       />
-      <div className="flex-1 overflow-auto">
+      <div
+        className="flex-1 overflow-auto"
+        aria-label="文件浏览区域"
+        onContextMenu={handleBackgroundContextMenu}
+      >
         {viewMode === "list" ? (
           <FileList
             files={visibleFiles}
             selected={selected}
             onNavigate={navigate}
             onSelect={handleClick}
+            onContextMenu={handleFileContextMenu}
           />
         ) : (
           <FileGrid
@@ -298,9 +395,18 @@ export function FileBrowser() {
             selected={selected}
             onNavigate={navigate}
             onSelect={handleClick}
+            onContextMenu={handleFileContextMenu}
           />
         )}
       </div>
+      {contextMenu && (
+        <FileBrowserContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          actions={contextMenu.actions}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }

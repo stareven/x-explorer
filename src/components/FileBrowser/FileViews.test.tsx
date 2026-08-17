@@ -50,6 +50,7 @@ describe("FileList", () => {
         selected={new Set()}
         onNavigate={onNavigate}
         onSelect={onSelect}
+        onContextMenu={vi.fn()}
       />
     );
     expect(screen.getByText("Documents")).toBeInTheDocument();
@@ -64,6 +65,7 @@ describe("FileList", () => {
         selected={new Set()}
         onNavigate={onNavigate}
         onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
       />
     );
     fireEvent.dblClick(screen.getByText("Documents"));
@@ -77,6 +79,7 @@ describe("FileList", () => {
         selected={new Set()}
         onNavigate={vi.fn()}
         onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
       />
     );
     expect(screen.getByText("1.0 KB")).toBeInTheDocument();
