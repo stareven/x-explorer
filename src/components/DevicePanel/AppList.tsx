@@ -64,11 +64,16 @@ export function AppList() {
       <div key={app.bundle_id} className="flex items-center">
         <button
           onClick={() => setBrowseTarget({ kind: "app", app })}
-          className={`flex-1 min-w-0 text-left px-3 py-1.5 rounded text-xs truncate ${
+          className={`flex-1 min-w-0 text-left px-3 py-1.5 rounded text-xs ${
             active ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-700"
           }`}
         >
-          {app.name}
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <span className="truncate">{app.name}</span>
+            <span className={`truncate text-[11px] ${active ? "text-blue-100" : "text-gray-500"}`}>
+              {app.bundle_id}
+            </span>
+          </div>
         </button>
         <button
           onClick={() => toggleFavoriteApp(app.bundle_id)}

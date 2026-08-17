@@ -32,15 +32,25 @@ export function Bookmarks() {
       {bookmarks.map((b) => {
         const label = b.app ? b.app.name : "外部存储";
         const dir = b.path === "/" ? "/" : b.path.split("/").filter(Boolean).pop();
+        const tooltip = b.app ? `${b.app.bundle_id}${b.path}` : b.path;
         return (
           <div key={`${b.platform}:${b.app?.bundle_id ?? ""}:${b.path}`} className="group flex items-center">
             <button
               onClick={() => jump(b)}
               className="flex-1 min-w-0 text-left px-3 py-1.5 rounded text-xs hover:bg-gray-700 text-gray-300"
-              title={`${label}${dir && dir !== "/" ? "/" + dir : ""}`}
+              title={tooltip}
             >
-              <span className="font-medium">{label}</span>
-              {dir && dir !== "/" && <span className="text-gray-500"> / {dir}</span>}
+              <div className="flex min-w-0 flex-col gap-0.5">
+                <span className="font-medium truncate">{label}</span>
+                {b.app ? (
+                  <span className="truncate text-gray-500">
+                    {b.app.bundle_id}
+                    {dir && dir !== "/" ? ` / ${dir}` : ""}
+                  </span>
+                ) : (
+                  dir && dir !== "/" && <span className="truncate text-gray-500">{dir}</span>
+                )}
+              </div>
             </button>
             <button
               onClick={() => removeBookmark(b)}
