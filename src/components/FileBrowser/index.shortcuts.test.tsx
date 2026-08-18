@@ -7,8 +7,8 @@ import { tauriApi } from "../../hooks/useTauri";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useSelection } from "./useSelection";
 
-vi.mock("../../hooks/useTauri", () => ({
-  tauriApi: {
+vi.mock("../../hooks/useTauri", () => {
+  const tauriApi = {
     listIosFiles: vi.fn().mockResolvedValue([]),
     listAndroidFiles: vi.fn().mockResolvedValue([]),
     enqueueIosFileInfo: vi.fn().mockResolvedValue(undefined),
@@ -24,10 +24,25 @@ vi.mock("../../hooks/useTauri", () => ({
     iosDeleteBatch: vi.fn().mockResolvedValue(undefined),
     androidDelete: vi.fn().mockResolvedValue(undefined),
     androidDeleteBatch: vi.fn().mockResolvedValue(undefined),
-  },
-  useIosFileInfoListener: vi.fn(),
-  useTransferListener: vi.fn(),
-}));
+  };
+  return {
+    tauriApi,
+    // Platform-dispatch helpers delegate to the per-platform mocks above so
+    // assertions on `tauriApi.enqueueIosUploadBatch` etc. continue to work.
+    enqueueUploadBatch: vi.fn((device, pkg, files) =>
+      device.platform === "ios"
+        ? tauriApi.enqueueIosUploadBatch(device.id, pkg, files)
+        : tauriApi.enqueueAndroidUploadBatch(device.id, files, pkg)
+    ),
+    enqueueDeleteBatch: vi.fn((device, pkg, paths) =>
+      device.platform === "ios"
+        ? tauriApi.iosDeleteBatch(device.id, pkg, paths)
+        : tauriApi.androidDeleteBatch(device.id, paths, pkg)
+    ),
+    useIosFileInfoListener: vi.fn(),
+    useTransferListener: vi.fn(),
+  };
+});
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),

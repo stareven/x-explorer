@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AppInfo, Device, FileEntry, TransferTask, useStore } from "../store";
 
 export interface TransferProgress {
@@ -95,6 +95,33 @@ export const tauriApi = {
   cancelTransfer: (taskId: string) => invoke<boolean>("cancel_transfer", { taskId }),
 };
 
+// Platform-dispatched helpers used by FileBrowser + useFileDrop. They collapse
+// the iOS-vs-Android `device.platform === "ios" ? iosApi() : androidApi()`
+// duplication that would otherwise appear at every call site that has to be
+// platform-aware (uploads + delete). Returns the new transfer task's id, which
+// the caller hands to its `rememberPendingReload` so the post-completion
+// reload listener can correlate the eventual `done` event with the right
+// directory.
+export function enqueueUploadBatch(
+  device: Device,
+  pkg: string | undefined,
+  files: TransferFileItem[]
+): Promise<string> {
+  return device.platform === "ios"
+    ? tauriApi.enqueueIosUploadBatch(device.id, pkg!, files)
+    : tauriApi.enqueueAndroidUploadBatch(device.id, files, pkg);
+}
+
+export function enqueueDeleteBatch(
+  device: Device,
+  pkg: string | undefined,
+  remotePaths: string[]
+): Promise<string> {
+  return device.platform === "ios"
+    ? tauriApi.iosDeleteBatch(device.id, pkg!, remotePaths)
+    : tauriApi.androidDeleteBatch(device.id, remotePaths, pkg);
+}
+
 // Hook: listen for device hotplug events and update the store's device list.
 // If the currently selected device disappears (unplugged), clear the
 // selection so FileBrowser doesn't keep showing a stale device's files.
@@ -118,12 +145,35 @@ export function useDeviceListener() {
 
 // Hook: listen for transfer progress events and upsert into the store's
 // transfers list. TransferPanel (Task 14) reads `transfers` from the store
-// rather than polling.
-export function useTransferListener() {
+// rather than polling. Optionally, callers can pass `onTaskComplete` to be
+// notified the moment a task transitions into a terminal state (`done` or
+// `error`), which FileBrowser uses to refresh its directory listing once the
+// backend has finished the corresponding upload/delete — the backend runs
+// jobs on a worker pool, so the listing taken right after `enqueue_*_batch`
+// would still reflect the pre-operation state on the device.
+export function useTransferListener(
+  onTaskComplete?: (task: TransferProgress) => void
+) {
   const upsertTransfer = useStore((s) => s.upsertTransfer);
+  // Read `onTaskComplete` through a ref so the listener registration below
+  // doesn't re-subscribe on every render. Without this, an inline-arrow
+  // callback in the caller would force a Tauri listen/unlisten round-trip
+  // on every render and force callers to invent their own "latest callback"
+  // indirection. With it, callers can pass plain inline arrows referencing
+  // fresh render-time values directly.
+  const onTaskCompleteRef = useRef(onTaskComplete);
   useEffect(() => {
+    onTaskCompleteRef.current = onTaskComplete;
+  }, [onTaskComplete]);
+
+  useEffect(() => {
+    // Per-task previous status map. Recreated on every effect run so that
+    // closed-over `prev` never survives across an unmount/remount (which
+    // would let a stale "was done" leak across trees of consumers).
+    const prevStatuses = new Map<string, string>();
     const unlisten = listen<TransferProgress>("transfer-progress", (event) => {
       const p = event.payload;
+      const prev = prevStatuses.get(p.task_id);
       upsertTransfer({
         id: p.task_id,
         kind: p.kind,
@@ -134,6 +184,19 @@ export function useTransferListener() {
         status: p.status,
         error: p.error,
       });
+      prevStatuses.set(p.task_id, p.status);
+      // Fire the completion callback when the task reaches a terminal state
+      // (`done`/`error`) — and only then, even when the very first event we
+      // see for a task is already terminal (e.g. a small batch whose
+      // progress events arrive faster than the listener polls, or a single
+      // completion that was never preceded by an intermediate progress
+      // event). Repeated terminal emissions (e.g. `cancel_transfer`
+      // re-publishing the snapshot) must not double-fire.
+      const isTerminal = p.status === "done" || p.status === "error";
+      const prevTerminal = prev === "done" || prev === "error";
+      if (isTerminal && !prevTerminal) {
+        onTaskCompleteRef.current?.(p);
+      }
     });
     return () => {
       unlisten.then((fn) => fn());

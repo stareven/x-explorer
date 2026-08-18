@@ -1,8 +1,8 @@
 import { error } from "@tauri-apps/plugin-log";
 import { useStore } from "../../store";
-import { tauriApi, TransferFileItem } from "../../hooks/useTauri";
+import { enqueueUploadBatch, TransferFileItem } from "../../hooks/useTauri";
 
-export function useFileDrop() {
+export function useFileDrop(rememberPendingReload: (taskId: string) => void = () => {}) {
   const selectedDeviceId = useStore((s) => s.selectedDeviceId);
   const browseTarget = useStore((s) => s.browseTarget);
   const devices = useStore((s) => s.devices);
@@ -32,11 +32,15 @@ export function useFileDrop() {
     if (uploadFiles.length === 0) return;
 
     try {
-      if (device.platform === "ios") {
-        await tauriApi.enqueueIosUploadBatch(device.id, pkg!, uploadFiles);
-      } else {
-        await tauriApi.enqueueAndroidUploadBatch(device.id, uploadFiles, pkg);
-      }
+      // Same deferred-refresh contract as `handleImport` in
+      // `FileBrowser/index.tsx`: the actual uploads run on the backend
+      // worker pool, so a reload fired here would still see the device's
+      // pre-upload state. The FileBrowser-level transfer-progress listener
+      // calls `reloadFiles({ useCache: false })` once the matching task
+      // emits `done`, at which point the listing reflects the real
+      // post-operation state.
+      const taskId = await enqueueUploadBatch(device, pkg, uploadFiles);
+      rememberPendingReload(taskId);
     } catch (e) {
       error(`Drop upload failed: ${e}`);
     }

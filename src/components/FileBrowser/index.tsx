@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEven
 import { open } from "@tauri-apps/plugin-dialog";
 import { error } from "@tauri-apps/plugin-log";
 import { FileEntry, parentPath, useStore } from "../../store";
-import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
+import { tauriApi, enqueueDeleteBatch, enqueueUploadBatch, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
 import { buildSearchIndex, compareSearchMatches, normalizeSearchQuery, rankSearchIndex } from "../../utils/search";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { Toolbar } from "./Toolbar";
@@ -69,10 +69,52 @@ export function FileBrowser() {
   const visibleFileNames = visibleFiles.map((f) => f.name);
   const { selected, handleClick, selectOnly, selectAll, clearSelection } = useSelection(visibleFileNames);
   const selectedVisibleFiles = visibleFiles.filter((file) => selected.has(file.name));
-  const { handleDrop, handleDragOver } = useFileDrop();
 
-  useTransferListener();
+  // Captures (device, app, path) at the moment of an upload/delete enqueue,
+  // so when the backend emits "task done" we can tell whether the user is
+  // still looking at the same directory we actually affected. A late-arriving
+  // reload from a directory the user has left would otherwise overwrite the
+  // listing of their current view.
+  const pendingReloadCtxRef = useRef<{
+    taskId: string;
+    platform: string;
+    deviceId: string;
+    pkg: string | undefined;
+    path: string;
+  } | null>(null);
+  function rememberPendingReload(taskId: string) {
+    if (!device) return;
+    pendingReloadCtxRef.current = {
+      taskId,
+      platform: device.platform,
+      deviceId: device.id,
+      pkg,
+      path: currentPath,
+    };
+  }
+  useTransferListener((task) => {
+    // The backend's actual upload/delete landed seconds after the user
+    // clicked; only at this exact moment is `listIosFiles` /
+    // `listAndroidFiles` guaranteed to see the post-operation state on the
+    // device, so this is when we drop the cache and refetch. `useTransferListener`
+    // routes the callback through its own latest-ref, so this inline arrow is
+    // safe to recreate on every render without re-subscribing the listener.
+    if (task.kind !== "upload" && task.kind !== "delete") return;
+    const ctx = pendingReloadCtxRef.current;
+    if (!ctx || ctx.taskId !== task.task_id) return;
+    pendingReloadCtxRef.current = null;
+    if (!device || device.platform !== ctx.platform || device.id !== ctx.deviceId) return;
+    if (pkg !== ctx.pkg) return;
+    if (currentPath !== ctx.path) return;
+    void reloadFiles({ useCache: false });
+  });
   useIosFileInfoListener();
+
+  // `useFileDrop` only needs `rememberPendingReload` for drag/drop uploads;
+  // passing it below its declaration here keeps the call order obvious to the
+  // reader (the function declaration itself is hoisted, so this still works
+  // either way).
+  const { handleDrop, handleDragOver } = useFileDrop(rememberPendingReload);
 
   // Latest-call-wins guard for async reloads: each reloadFiles call bumps the
   // sequence and discards older in-flight results. Covers both navigation
@@ -277,11 +319,12 @@ export function FileBrowser() {
       };
     });
     try {
-      if (device.platform === "ios") {
-        await tauriApi.enqueueIosUploadBatch(device.id, pkg!, uploadFiles);
-      } else {
-        await tauriApi.enqueueAndroidUploadBatch(device.id, uploadFiles, pkg);
-      }
+      // The actual `afcclient put` runs on the backend worker pool; the UI
+      // refresh is wired to the matching `transfer-progress` `done` event
+      // (see useTransferListener above) so we don't pull a half-finished
+      // listing here.
+      const taskId = await enqueueUploadBatch(device, pkg, uploadFiles);
+      rememberPendingReload(taskId);
     } catch (e) {
       error(`Failed to enqueue upload: ${e}`);
     }
@@ -342,16 +385,14 @@ export function FileBrowser() {
     const selectedFiles = selectedVisibleFiles;
     const remotePaths = selectedFiles.map((file) => file.path);
     try {
-      if (device.platform === "ios") {
-        await tauriApi.iosDeleteBatch(device.id, pkg!, remotePaths);
-      } else {
-        await tauriApi.androidDeleteBatch(device.id, remotePaths, pkg);
-      }
-      // Batch enqueue returned; the actual deletes run async on the backend
-      // worker pool. Reload the listing now so the UI doesn't show stale
-      // entries until manual refresh — useTransferListener only upserts into
-      // the store and does not trigger a reload.
-      await reloadFiles({ useCache: false });
+      // Batch enqueue only — the deletes run async on the backend worker
+      // pool. Pulling the listing right after enqueue would fetch a snapshot
+      // taken before the deletes land and cache that stale state (see git
+      // blame for the original mistake). The reload is deferred to the
+      // matching `transfer-progress` `done` event in the listener above, by
+      // which point the device's directory state is guaranteed settled.
+      const taskId = await enqueueDeleteBatch(device, pkg, remotePaths);
+      rememberPendingReload(taskId);
     } catch (e) {
       error(`Failed to enqueue delete: ${e}`);
     }
