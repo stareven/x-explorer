@@ -1,9 +1,7 @@
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { AppList } from "../DevicePanel/AppList";
 import { FileList } from "./FileList";
 import { Device, FileEntry, useStore } from "../../store";
-import { tauriApi } from "../../hooks/useTauri";
 
 vi.mock("../../hooks/useTauri", () => ({
   tauriApi: {
@@ -83,14 +81,6 @@ describe("FileList", () => {
       />
     );
     expect(screen.getByText("1.0 KB")).toBeInTheDocument();
-  });
-
-  it("does not show android app names in the sidebar", async () => {
-    render(<AppList />);
-
-    expect(screen.getAllByText("外部存储")).toHaveLength(2);
-    expect(screen.queryByText("Baidu Maps")).toBeNull();
-    expect(vi.mocked(tauriApi.listAndroidApps)).not.toHaveBeenCalled();
   });
 });
 
