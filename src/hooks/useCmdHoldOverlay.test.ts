@@ -23,38 +23,38 @@ describe("useCmdHoldOverlay", () => {
     vi.useRealTimers();
   });
 
-  it("becomes visible after holding Meta for 800ms", () => {
+  it("becomes visible after holding Meta for 600ms", () => {
     const { result } = renderHook(() => useCmdHoldOverlay());
 
     expect(result.current).toBe(false);
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
 
     expect(result.current).toBe(true);
   });
 
-  it("does not become visible before 800ms elapses", () => {
+  it("does not become visible before 600ms elapses", () => {
     const { result } = renderHook(() => useCmdHoldOverlay());
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(799);
+      vi.advanceTimersByTime(599);
     });
 
     expect(result.current).toBe(false);
   });
 
-  it("releasing Meta before 800ms cancels the overlay", () => {
+  it("releasing Meta before 600ms cancels the overlay", () => {
     const { result } = renderHook(() => useCmdHoldOverlay());
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
       dispatchKeyUp("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
     });
 
     expect(result.current).toBe(false);
@@ -65,7 +65,7 @@ describe("useCmdHoldOverlay", () => {
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
     expect(result.current).toBe(true);
 
@@ -81,9 +81,9 @@ describe("useCmdHoldOverlay", () => {
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
       dispatchKeyDown("b");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
     });
 
     expect(result.current).toBe(false);
@@ -94,7 +94,7 @@ describe("useCmdHoldOverlay", () => {
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
     expect(result.current).toBe(true);
 
@@ -109,16 +109,16 @@ describe("useCmdHoldOverlay", () => {
     const { result: pendingResult } = renderHook(() => useCmdHoldOverlay());
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
       dispatchBlur();
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
     });
     expect(pendingResult.current).toBe(false);
 
     const { result: visibleResult } = renderHook(() => useCmdHoldOverlay());
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
     expect(visibleResult.current).toBe(true);
 

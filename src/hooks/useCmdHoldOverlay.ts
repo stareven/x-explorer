@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-const HOLD_DURATION_MS = 800;
+const HOLD_DURATION_MS = 600;
 
 export function useCmdHoldOverlay(): boolean {
   const [visible, setVisible] = useState(false);
