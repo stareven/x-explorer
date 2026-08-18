@@ -7,7 +7,7 @@
 
 ## 概述
 
-在整个应用中，长按 Cmd 键 800ms 后，弹出一个半透明全屏蒙层，居中展示一张卡片，列出当前 FileBrowser 支持的全部快捷键（按键组合 + 中文说明）。松开 Cmd 键后蒙层立即消失。该行为全局生效，不受输入框聚焦、当前界面等条件限制。
+在整个应用中，长按 Cmd 键 600ms 后，弹出一个半透明全屏蒙层，居中展示一张卡片，列出当前 FileBrowser 支持的全部快捷键（按键组合 + 中文说明）。松开 Cmd 键后蒙层立即消失。该行为全局生效，不受输入框聚焦、当前界面等条件限制。
 
 ## 背景
 
@@ -15,9 +15,9 @@ FileBrowser 已经实现了 9 个 macOS 风格快捷键（`src/components/FileBr
 
 ## 触发规则
 
-- 单独按下并持续按住 `Meta`（Cmd）键，不释放、且期间没有按下任何其他键，达到 **800ms** 后显示蒙层。
+- 单独按下并持续按住 `Meta`（Cmd）键，不释放、且期间没有按下任何其他键，达到 **600ms** 后显示蒙层。
 - 蒙层显示期间，若用户松开 Cmd 键，立即隐藏蒙层（无过渡动画要求，也不需要额外的关闭方式）。
-- 在等待 800ms 计时期间，如果用户按下了除 `Meta` 以外的任意键（意味着正在触发某个 Cmd+X 快捷键组合），取消计时器；如果蒙层已经显示，则立即关闭。
+- 在等待 600ms 计时期间，如果用户按下了除 `Meta` 以外的任意键（意味着正在触发某个 Cmd+X 快捷键组合），取消计时器；如果蒙层已经显示，则立即关闭。
 - 窗口失去焦点（`blur`）时重置内部状态（清除计时器、隐藏蒙层），避免因为 `keyup` 事件丢失（例如切换到其他应用时松开 Cmd）导致蒙层卡在显示状态。
 - 该行为不检查 `isEditableTarget`（不同于现有快捷键的输入框保护逻辑）——无论焦点在哪里，长按 Cmd 都会弹出蒙层。这是与 `getFileBrowserShortcutAction` 唯一的行为差异点。
 
@@ -29,7 +29,7 @@ FileBrowser 已经实现了 9 个 macOS 风格快捷键（`src/components/FileBr
 
 - 在 `window` 上监听 `keydown`、`keyup`、`blur`。
 - `keydown`：
-  - 若 `event.key === "Meta"` 且当前没有计时器在跑、且没有"已按下非 Meta 键"标记 → 启动 `setTimeout(800ms)`，到时置 `isVisible = true`。
+  - 若 `event.key === "Meta"` 且当前没有计时器在跑、且没有"已按下非 Meta 键"标记 → 启动 `setTimeout(600ms)`，到时置 `isVisible = true`。
   - 若 `event.key !== "Meta"` → 清除计时器（如果存在），若 `isVisible === true` 则置为 `false`。
 - `keyup`：
   - 若 `event.key === "Meta"` → 清除计时器，置 `isVisible = false`。
@@ -89,10 +89,10 @@ const showShortcuts = useCmdHoldOverlay();
 ## 测试
 
 - `src/hooks/useCmdHoldOverlay.test.ts`：使用 `vitest` 的 fake timer 验证：
-  - 按住 `Meta` 800ms 后返回 `true`。
-  - 未满 800ms 松开 `Meta` 不会变为 `true`。
+  - 按住 `Meta` 600ms 后返回 `true`。
+  - 未满 600ms 松开 `Meta` 不会变为 `true`。
   - 显示后松开 `Meta` 立即变回 `false`。
-  - 等待期间按下非 `Meta` 键会取消计时（之后即使凑够 800ms 也不显示）。
+  - 等待期间按下非 `Meta` 键会取消计时（之后即使凑够 600ms 也不显示）。
   - 已显示时按下非 `Meta` 键会立即隐藏。
   - 触发 `window` 的 `blur` 事件会重置为 `false` 并清除挂起的计时器。
 - `src/components/ShortcutsOverlay.test.tsx`：

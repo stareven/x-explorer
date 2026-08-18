@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a global "hold Cmd for 800ms" overlay that displays all FileBrowser keyboard shortcuts in a centered, semi-transparent card, and hides immediately when Cmd is released.
+**Goal:** Add a global "hold Cmd for 600ms" overlay that displays all FileBrowser keyboard shortcuts in a centered, semi-transparent card, and hides immediately when Cmd is released.
 
 **Architecture:** A new `FILE_BROWSER_SHORTCUTS` data table in `shortcuts.ts` becomes the single source of truth for shortcut display strings/descriptions. A new `useCmdHoldOverlay` hook (window-level `keydown`/`keyup`/`blur` listeners + a timer) tracks whether the overlay should be visible, independent of any focus/editable-target checks. A new `ShortcutsOverlay` presentational component renders the overlay when told to. `App.tsx` wires the hook's boolean into the overlay component at the top level so it works globally, not just inside `FileBrowser`.
 
@@ -102,38 +102,38 @@ describe("useCmdHoldOverlay", () => {
     vi.useRealTimers();
   });
 
-  it("becomes visible after holding Meta for 800ms", () => {
+  it("becomes visible after holding Meta for 600ms", () => {
     const { result } = renderHook(() => useCmdHoldOverlay());
 
     expect(result.current).toBe(false);
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
 
     expect(result.current).toBe(true);
   });
 
-  it("does not become visible before 800ms elapses", () => {
+  it("does not become visible before 600ms elapses", () => {
     const { result } = renderHook(() => useCmdHoldOverlay());
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(799);
+      vi.advanceTimersByTime(599);
     });
 
     expect(result.current).toBe(false);
   });
 
-  it("releasing Meta before 800ms cancels the overlay", () => {
+  it("releasing Meta before 600ms cancels the overlay", () => {
     const { result } = renderHook(() => useCmdHoldOverlay());
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
       dispatchKeyUp("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
     });
 
     expect(result.current).toBe(false);
@@ -144,7 +144,7 @@ describe("useCmdHoldOverlay", () => {
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
     expect(result.current).toBe(true);
 
@@ -160,9 +160,9 @@ describe("useCmdHoldOverlay", () => {
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
       dispatchKeyDown("b");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
     });
 
     expect(result.current).toBe(false);
@@ -173,7 +173,7 @@ describe("useCmdHoldOverlay", () => {
 
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
     expect(result.current).toBe(true);
 
@@ -188,16 +188,16 @@ describe("useCmdHoldOverlay", () => {
     const { result: pendingResult } = renderHook(() => useCmdHoldOverlay());
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
       dispatchBlur();
-      vi.advanceTimersByTime(400);
+      vi.advanceTimersByTime(300);
     });
     expect(pendingResult.current).toBe(false);
 
     const { result: visibleResult } = renderHook(() => useCmdHoldOverlay());
     act(() => {
       dispatchKeyDown("Meta");
-      vi.advanceTimersByTime(800);
+      vi.advanceTimersByTime(600);
     });
     expect(visibleResult.current).toBe(true);
 
@@ -238,7 +238,7 @@ Create `src/hooks/useCmdHoldOverlay.ts`:
 ```ts
 import { useEffect, useRef, useState } from "react";
 
-const HOLD_DURATION_MS = 800;
+const HOLD_DURATION_MS = 600;
 
 export function useCmdHoldOverlay(): boolean {
   const [visible, setVisible] = useState(false);
@@ -486,4 +486,4 @@ git commit -m "feat: wire Cmd-hold shortcuts overlay into App"
 
 - [ ] Run `cd /Users/hongqize/Workspace/x-explorer && npx vitest run` — all tests pass.
 - [ ] Run `cd /Users/hongqize/Workspace/x-explorer && npx tsc --noEmit` — no type errors.
-- [ ] Manually verify with `npm run tauri dev`: hold Cmd for ~800ms with no other key pressed → overlay appears listing 9 shortcuts; release Cmd → overlay disappears immediately; hold Cmd then press another key (e.g. `b`) → overlay does not appear (or disappears if already visible).
+- [ ] Manually verify with `npm run tauri dev`: hold Cmd for ~600ms with no other key pressed → overlay appears listing 9 shortcuts; release Cmd → overlay disappears immediately; hold Cmd then press another key (e.g. `b`) → overlay does not appear (or disappears if already visible).
