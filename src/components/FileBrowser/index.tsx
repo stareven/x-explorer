@@ -268,18 +268,22 @@ export function FileBrowser() {
     const paths = await open({ multiple: true });
     if (!paths || !device) return;
     const pathList = Array.isArray(paths) ? paths : [paths];
-    for (const localPath of pathList) {
+    const uploadFiles = pathList.map((localPath) => {
       const fileName = localPath.split("/").pop()!;
-      const remotePath = `${currentPath.replace(/\/$/, "")}/${fileName}`;
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.enqueueIosUpload(device.id, pkg!, localPath, remotePath);
-        } else {
-          await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
-        }
-      } catch (e) {
-        error(`Failed to enqueue upload for ${fileName}: ${e}`);
+      return {
+        src: localPath,
+        dst: `${currentPath.replace(/\/$/, "")}/${fileName}`,
+        is_dir: false,
+      };
+    });
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.enqueueIosUploadBatch(device.id, pkg!, uploadFiles);
+      } else {
+        await tauriApi.enqueueAndroidUploadBatch(device.id, uploadFiles, pkg);
       }
+    } catch (e) {
+      error(`Failed to enqueue upload: ${e}`);
     }
   }
 
@@ -317,35 +321,41 @@ export function FileBrowser() {
     const selectedFiles = selectedVisibleFiles;
     const destDir = await open({ directory: true });
     if (!destDir || typeof destDir !== "string") return;
-    for (const file of selectedFiles) {
-      const localPath = `${destDir}/${file.name}`;
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.enqueueIosDownload(device.id, pkg!, file.path, localPath);
-        } else {
-          await tauriApi.enqueueAndroidDownload(device.id, file.path, localPath, pkg);
-        }
-      } catch (e) {
-        error(`Failed to enqueue download for ${file.name}: ${e}`);
+    const downloadFiles = selectedFiles.map((file) => ({
+      src: file.path,
+      dst: `${destDir}/${file.name}`,
+      is_dir: file.is_dir,
+    }));
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.enqueueIosDownloadBatch(device.id, pkg!, downloadFiles);
+      } else {
+        await tauriApi.enqueueAndroidDownloadBatch(device.id, downloadFiles, pkg);
       }
+    } catch (e) {
+      error(`Failed to enqueue download: ${e}`);
     }
   }
 
-  async function handleDelete() {    if (!device || !window.confirm(`删除选中的 ${selectedVisibleFiles.length} 个文件？`)) return;
+  async function handleDelete() {
+    if (!device || !window.confirm(`删除选中的 ${selectedVisibleFiles.length} 个文件？`)) return;
     const selectedFiles = selectedVisibleFiles;
-    for (const file of selectedFiles) {
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.iosDelete(device.id, pkg!, file.path);
-        } else {
-          await tauriApi.androidDelete(device.id, file.path, pkg);
-        }
-      } catch (e) {
-        error(`Failed to delete ${file.name}: ${e}`);
+    const remotePaths = selectedFiles.map((file) => file.path);
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.iosDeleteBatch(device.id, pkg!, remotePaths);
+      } else {
+        await tauriApi.androidDeleteBatch(device.id, remotePaths, pkg);
       }
+      // Batch enqueue returned; the actual deletes run async on the backend
+      // worker pool. Reload the listing now so the UI doesn't show stale
+      // entries until manual refresh — useTransferListener only upserts into
+      // the store and does not trigger a reload.
+      await reloadFiles({ useCache: false });
+    } catch (e) {
+      error(`Failed to enqueue delete: ${e}`);
     }
     clearSelection();
-    await reloadFiles();
   }
 
   if (!device) {

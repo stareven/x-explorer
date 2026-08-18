@@ -1,6 +1,6 @@
 import { error } from "@tauri-apps/plugin-log";
 import { useStore } from "../../store";
-import { tauriApi } from "../../hooks/useTauri";
+import { tauriApi, TransferFileItem } from "../../hooks/useTauri";
 
 export function useFileDrop() {
   const selectedDeviceId = useStore((s) => s.selectedDeviceId);
@@ -18,20 +18,27 @@ export function useFileDrop() {
     if (!device || !browseTarget) return;
 
     const files = Array.from(e.dataTransfer.files);
-    for (const file of files) {
-      const localPath = (file as any).path; // Tauri provides file.path via drag-drop
-      if (!localPath) continue;
-      const remotePath = `${currentPath.replace(/\/$/, "")}/${file.name}`;
+    const uploadFiles = files
+      .map((file) => {
+        const localPath = (file as any).path; // Tauri provides file.path via drag-drop
+        if (!localPath) return null;
+        return {
+          src: localPath,
+          dst: `${currentPath.replace(/\/$/, "")}/${file.name}`,
+          is_dir: false,
+        };
+      })
+      .filter((item): item is TransferFileItem => item != null);
+    if (uploadFiles.length === 0) return;
 
-      try {
-        if (device.platform === "ios") {
-          await tauriApi.enqueueIosUpload(device.id, pkg!, localPath, remotePath);
-        } else {
-          await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
-        }
-      } catch (e) {
-        error(`Drop upload failed: ${e}`);
+    try {
+      if (device.platform === "ios") {
+        await tauriApi.enqueueIosUploadBatch(device.id, pkg!, uploadFiles);
+      } else {
+        await tauriApi.enqueueAndroidUploadBatch(device.id, uploadFiles, pkg);
       }
+    } catch (e) {
+      error(`Drop upload failed: ${e}`);
     }
   }
 

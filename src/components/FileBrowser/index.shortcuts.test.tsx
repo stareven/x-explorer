@@ -13,11 +13,17 @@ vi.mock("../../hooks/useTauri", () => ({
     listAndroidFiles: vi.fn().mockResolvedValue([]),
     enqueueIosFileInfo: vi.fn().mockResolvedValue(undefined),
     enqueueIosUpload: vi.fn().mockResolvedValue(undefined),
+    enqueueIosUploadBatch: vi.fn().mockResolvedValue(undefined),
     enqueueAndroidUpload: vi.fn().mockResolvedValue(undefined),
+    enqueueAndroidUploadBatch: vi.fn().mockResolvedValue(undefined),
     enqueueIosDownload: vi.fn().mockResolvedValue(undefined),
+    enqueueIosDownloadBatch: vi.fn().mockResolvedValue(undefined),
     enqueueAndroidDownload: vi.fn().mockResolvedValue(undefined),
+    enqueueAndroidDownloadBatch: vi.fn().mockResolvedValue(undefined),
     iosDelete: vi.fn().mockResolvedValue(undefined),
+    iosDeleteBatch: vi.fn().mockResolvedValue(undefined),
     androidDelete: vi.fn().mockResolvedValue(undefined),
+    androidDeleteBatch: vi.fn().mockResolvedValue(undefined),
   },
   useIosFileInfoListener: vi.fn(),
   useTransferListener: vi.fn(),
@@ -145,13 +151,13 @@ describe("FileBrowser shortcuts", () => {
     fireEvent.keyDown(window, { key: "u", metaKey: true });
 
     await waitFor(() => {
-      expect(vi.mocked(tauriApi.enqueueIosUpload)).toHaveBeenCalledWith(
+      expect(vi.mocked(tauriApi.enqueueIosUploadBatch)).toHaveBeenCalledWith(
         iosDevice.id,
         app.bundle_id,
-        "/tmp/report.pdf",
-        "/Documents/report.pdf"
+        [{ src: "/tmp/report.pdf", dst: "/Documents/report.pdf", is_dir: false }]
       );
     });
+    expect(vi.mocked(tauriApi.enqueueIosUpload)).not.toHaveBeenCalled();
   });
 
   it("opens an import-only context menu from the blank browser background", async () => {
@@ -167,13 +173,13 @@ describe("FileBrowser shortcuts", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "导入" }));
 
     await waitFor(() => {
-      expect(vi.mocked(tauriApi.enqueueIosUpload)).toHaveBeenCalledWith(
+      expect(vi.mocked(tauriApi.enqueueIosUploadBatch)).toHaveBeenCalledWith(
         iosDevice.id,
         app.bundle_id,
-        "/tmp/context.pdf",
-        "/Documents/context.pdf"
+        [{ src: "/tmp/context.pdf", dst: "/Documents/context.pdf", is_dir: false }]
       );
     });
+    expect(vi.mocked(tauriApi.enqueueIosUpload)).not.toHaveBeenCalled();
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
@@ -207,13 +213,41 @@ describe("FileBrowser shortcuts", () => {
     fireEvent.keyDown(window, { key: "s", metaKey: true });
 
     await waitFor(() => {
-      expect(vi.mocked(tauriApi.enqueueIosDownload)).toHaveBeenCalledWith(
+      expect(vi.mocked(tauriApi.enqueueIosDownloadBatch)).toHaveBeenCalledWith(
         iosDevice.id,
         app.bundle_id,
-        "/Documents/one.txt",
-        "/tmp/export/one.txt"
+        [{ src: "/Documents/one.txt", dst: "/tmp/export/one.txt", is_dir: false }]
       );
     });
+    expect(vi.mocked(tauriApi.enqueueIosDownload)).not.toHaveBeenCalled();
+  });
+
+  it("downloads a directory via batch API with is_dir=true so progress tracks leaf files", async () => {
+    vi.mocked(tauriApi.listIosFiles).mockResolvedValue([
+      { name: "two.txt", path: "/Documents/two.txt", is_dir: true, size: 0, modified: 1 },
+    ] as never);
+    mockSelection(["two.txt"]);
+    vi.mocked(open).mockResolvedValue("/tmp/export" as never);
+    render(<FileBrowser />);
+
+    // Render-time useEffect calls reloadFiles() which overwrites the store;
+    // wait for the mocked directory entry to land before exporting.
+    await waitFor(() => {
+      expect(useStore.getState().files).toEqual([
+        expect.objectContaining({ name: "two.txt", is_dir: true }),
+      ]);
+    });
+
+    fireEvent.keyDown(window, { key: "s", metaKey: true });
+
+    await waitFor(() => {
+      expect(vi.mocked(tauriApi.enqueueIosDownloadBatch)).toHaveBeenCalledWith(
+        iosDevice.id,
+        app.bundle_id,
+        [{ src: "/Documents/two.txt", dst: "/tmp/export/two.txt", is_dir: true }]
+      );
+    });
+    expect(vi.mocked(tauriApi.enqueueIosDownload)).not.toHaveBeenCalled();
   });
 
   it("does not download or delete without a selection", () => {
@@ -224,7 +258,9 @@ describe("FileBrowser shortcuts", () => {
 
     expect(vi.mocked(open)).not.toHaveBeenCalled();
     expect(vi.mocked(tauriApi.enqueueIosDownload)).not.toHaveBeenCalled();
+    expect(vi.mocked(tauriApi.enqueueIosDownloadBatch)).not.toHaveBeenCalled();
     expect(vi.mocked(tauriApi.iosDelete)).not.toHaveBeenCalled();
+    expect(vi.mocked(tauriApi.iosDeleteBatch)).not.toHaveBeenCalled();
   });
 
   it("deletes selected files from Cmd+Backspace", async () => {
@@ -235,7 +271,12 @@ describe("FileBrowser shortcuts", () => {
 
     await waitFor(() => {
       expect(window.confirm).toHaveBeenCalledWith("删除选中的 1 个文件？");
-      expect(vi.mocked(tauriApi.iosDelete)).toHaveBeenCalledWith(iosDevice.id, app.bundle_id, "/Documents/one.txt");
+      expect(vi.mocked(tauriApi.iosDeleteBatch)).toHaveBeenCalledWith(
+        iosDevice.id,
+        app.bundle_id,
+        ["/Documents/one.txt"]
+      );
     });
+    expect(vi.mocked(tauriApi.iosDelete)).not.toHaveBeenCalled();
   });
 });
