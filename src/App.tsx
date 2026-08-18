@@ -2,12 +2,15 @@ import { useEffect, useState } from "react";
 import { DevicePanel } from "./components/DevicePanel";
 import { FileBrowser } from "./components/FileBrowser";
 import { TransferPanel } from "./components/TransferPanel";
+import { ShortcutsOverlay } from "./components/ShortcutsOverlay";
 import { useDeviceListener } from "./hooks/useTauri";
 import { tauriApi } from "./hooks/useTauri";
 import { useStore } from "./store";
+import { useCmdHoldOverlay } from "./hooks/useCmdHoldOverlay";
 
 export default function App() {
   useDeviceListener();
+  const showShortcutsOverlay = useCmdHoldOverlay();
 
   const setDevices = useStore((s) => s.setDevices);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -47,6 +50,7 @@ export default function App() {
         <FileBrowser />
       </div>
       <TransferPanel />
+      <ShortcutsOverlay visible={showShortcutsOverlay} />
     </div>
   );
 }
