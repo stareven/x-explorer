@@ -47,6 +47,22 @@ impl Drop for RunningCountGuard<'_> {
     }
 }
 
+/// RAII guard for the intra-job parallelism semaphore: releases one slot and
+/// wakes a waiter when dropped. Mirrors the `RunningCountGuard` pattern so the
+/// slot is freed on every exit path from the spawned thread (normal return,
+/// cancellation skip, or panic) without an explicit release at each site.
+struct ParallelSlotGuard<'a> {
+    semaphore: &'a Arc<(Mutex<usize>, Condvar)>,
+}
+
+impl Drop for ParallelSlotGuard<'_> {
+    fn drop(&mut self) {
+        let (lock, cvar) = &**self.semaphore;
+        *lock.lock().unwrap() -= 1;
+        cvar.notify_one();
+    }
+}
+
 /// Returns true if the task with `id` is present in `tasks` and marked "cancelled".
 fn is_cancelled(tasks: &HashMap<String, TransferTask>, id: &str) -> bool {
     tasks.get(id).map(|t| t.status.as_str()) == Some("cancelled")
@@ -145,48 +161,11 @@ impl TransferQueue {
         *self.running_count.lock().unwrap() += 1;
         let _guard = RunningCountGuard { count: &self.running_count };
 
-        for op in ops {
-            {
-                let tasks = self.tasks.lock().unwrap();
-                if is_cancelled(&tasks, &task.id) {
-                    task.status = "cancelled".to_string();
-                    drop(tasks);
-                    emit_progress(handle, &task);
-                    return;
-                }
-            }
-            let result = run_op(op);
-
-            let mut tasks = self.tasks.lock().unwrap();
-            // A cancellation requested mid-flight still lands here after the blocking call returns;
-            // respect it instead of continuing with the remaining files.
-            if is_cancelled(&tasks, &task.id) {
-                task.status = "cancelled".to_string();
-                tasks.insert(task.id.clone(), task.clone());
-                drop(tasks);
-                emit_progress(handle, &task);
-                return;
-            }
-            match result {
-                Ok(()) => {
-                    task.completed_files += 1;
-                    if task.completed_files == task.total_files {
-                        task.status = "done".to_string();
-                    }
-                }
-                Err(e) => {
-                    task.status = "error".to_string();
-                    task.error = Some(e);
-                    tasks.insert(task.id.clone(), task.clone());
-                    drop(tasks);
-                    emit_progress(handle, &task);
-                    return;
-                }
-            }
-            tasks.insert(task.id.clone(), task.clone());
-            drop(tasks);
-            emit_progress(handle, &task);
-        }
+        // Run the ops in parallel, bounded by `MAX_JOB_PARALLELISM`. Replaces
+        // the previous serial `for op in ops` loop, which made a 50-file
+        // folder download take 50× longer than necessary (each `afcclient get`
+        // is independently spawned and I/O-bound).
+        run_ops_parallel(handle, self.tasks.clone(), task.id.clone(), ops);
     }
 
     pub fn enqueue(&self, kind: &str, src: &str, dst: &str, op: JobOp) -> String {
@@ -221,6 +200,114 @@ impl TransferQueue {
     pub fn get_status(&self, task_id: &str) -> Option<String> {
         self.tasks.lock().unwrap().get(task_id).map(|t| t.status.clone())
     }
+}
+
+/// Maximum number of operations a single job processes in parallel. Caps the
+/// total concurrent subprocess count at `MAX_JOB_PARALLELISM × max_concurrent
+/// worker threads`; with the default 3 workers and this set to 3, up to 9
+/// `afcclient` subprocesses can be in flight at once (e.g. 9 concurrent
+/// `afcclient get` calls). Matches `enqueue_ios_file_info`'s 8-way probe
+/// concurrency, which has been stable in production.
+const MAX_JOB_PARALLELISM: usize = 3;
+
+/// Runs every op in `ops` concurrently, with at most `MAX_JOB_PARALLELISM`
+/// ops in flight at any time. Each spawned thread acquires a slot from a
+/// shared semaphore (blocking on a `Condvar` while the cap is saturated),
+/// runs its op, updates the shared task map, and releases the slot via the
+/// `ParallelSlotGuard` RAII drop.
+///
+/// Cancellation: the spawn loop stops spawning new work the moment it observes
+/// a cancelled task, and each spawned thread rechecks cancellation right
+/// after acquiring its slot (catches a cancel that arrived while the thread
+/// was blocked in `cvar.wait`). Already-running ops always run to completion
+/// — there is no way to interrupt a subprocess — and any task-state update
+/// is skipped if the task is already in a terminal state (cancelled, done,
+/// or error).
+fn run_ops_parallel(
+    handle: &AppHandle,
+    tasks: Arc<Mutex<HashMap<String, TransferTask>>>,
+    task_id: String,
+    ops: Vec<JobOp>,
+) {
+    if ops.is_empty() {
+        return;
+    }
+
+    let semaphore = Arc::new((Mutex::new(0usize), Condvar::new()));
+
+    std::thread::scope(|scope| {
+        for op in ops {
+            // Don't spawn more work once the task is cancelled.
+            {
+                let g = tasks.lock().unwrap();
+                if is_cancelled(&g, &task_id) {
+                    break;
+                }
+            }
+
+            let handle = handle.clone();
+            let task_id = task_id.clone();
+            let semaphore = semaphore.clone();
+            let tasks = tasks.clone();
+
+            scope.spawn(move || {
+                // Slot is released when this closure exits (RAII), so the
+                // semaphore can't leak even on panic or early return.
+                let _slot_guard = ParallelSlotGuard { semaphore: &semaphore };
+
+                // Acquire slot (blocks while the cap is saturated).
+                {
+                    let (lock, cvar) = &*semaphore;
+                    let mut in_flight = lock.lock().unwrap();
+                    while *in_flight >= MAX_JOB_PARALLELISM {
+                        in_flight = cvar.wait(in_flight).unwrap();
+                    }
+                    *in_flight += 1;
+                }
+
+                // Cancellation re-check: covers a cancel that arrived while
+                // this thread was blocked on `cvar.wait`. Skip the op but
+                // release the slot (the guard handles that on drop).
+                {
+                    let g = tasks.lock().unwrap();
+                    if is_cancelled(&g, &task_id) {
+                        return;
+                    }
+                }
+
+                let result = run_op(op);
+
+                // Update task state. If another thread already moved the
+                // task to a terminal state (e.g. a peer op errored first,
+                // or the user cancelled mid-flight), skip the update so we
+                // don't clobber it.
+                let snapshot = {
+                    let mut g = tasks.lock().unwrap();
+                    let Some(t) = g.get_mut(&task_id) else {
+                        return;
+                    };
+                    if matches!(t.status.as_str(), "cancelled" | "done" | "error") {
+                        return;
+                    }
+                    match result {
+                        Ok(()) => {
+                            t.completed_files += 1;
+                            if t.completed_files == t.total_files {
+                                t.status = "done".to_string();
+                            }
+                        }
+                        Err(e) => {
+                            t.status = "error".to_string();
+                            t.error = Some(e);
+                        }
+                    }
+                    t.clone()
+                };
+
+                emit_progress(&handle, &snapshot);
+            });
+        }
+    });
 }
 
 fn run_op(op: JobOp) -> Result<(), String> {
@@ -791,5 +878,18 @@ mod tests {
             assert_eq!(*running_count.lock().unwrap(), 1);
         }
         assert_eq!(*running_count.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_parallel_slot_guard_decrements_on_drop() {
+        let semaphore: Arc<(Mutex<usize>, Condvar)> =
+            Arc::new((Mutex::new(0), Condvar::new()));
+        *semaphore.0.lock().unwrap() += 1;
+        assert_eq!(*semaphore.0.lock().unwrap(), 1);
+        {
+            let _guard = ParallelSlotGuard { semaphore: &semaphore };
+            assert_eq!(*semaphore.0.lock().unwrap(), 1);
+        }
+        assert_eq!(*semaphore.0.lock().unwrap(), 0);
     }
 }
