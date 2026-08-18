@@ -11,6 +11,7 @@ import { useSelection } from "./useSelection";
 import { useFileDrop } from "./useFileDrop";
 import { getFileBrowserShortcutAction } from "./shortcuts";
 import { FileBrowserContextMenu } from "./FileBrowserContextMenu";
+import { GoToPathDialog } from "./GoToPathDialog";
 
 // Stale-while-revalidate directory listing cache: revisiting a previously
 // browsed path renders the cached entries instantly while a fresh listing is
@@ -45,6 +46,7 @@ export function FileBrowser() {
   const pkg = browseTarget?.kind === "app" ? browseTarget.app.bundle_id : undefined;
   const [fileSearch, setFileSearch] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; actions: { label: string; onAction: () => void }[] } | null>(null);
+  const [showGoToPath, setShowGoToPath] = useState(false);
   const searchTerm = normalizeSearchQuery(fileSearch);
   const visibleFiles = useMemo(
     () =>
@@ -197,6 +199,9 @@ export function FileBrowser() {
           break;
         case "select-all":
           selectAll();
+          break;
+        case "goto":
+          setShowGoToPath(true);
           break;
       }
     };
@@ -405,6 +410,13 @@ export function FileBrowser() {
           y={contextMenu.y}
           actions={contextMenu.actions}
           onClose={() => setContextMenu(null)}
+        />
+      )}
+      {showGoToPath && (
+        <GoToPathDialog
+          initialValue={currentPath}
+          onSubmit={(path) => navigate(path)}
+          onClose={() => setShowGoToPath(false)}
         />
       )}
     </div>

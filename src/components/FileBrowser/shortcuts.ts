@@ -6,7 +6,8 @@ export type FileBrowserShortcutAction =
   | "upload"
   | "download"
   | "delete"
-  | "select-all";
+  | "select-all"
+  | "goto";
 
 type ShortcutEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "target">;
 
@@ -52,6 +53,8 @@ export function getFileBrowserShortcutAction(event: ShortcutEvent): FileBrowserS
       return "delete";
     case "a":
       return "select-all";
+    case "g":
+      return "goto";
     default:
       return null;
   }

@@ -11,6 +11,7 @@ describe("file browser shortcuts", () => {
     expect(getFileBrowserShortcutAction({ key: "s", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("download");
     expect(getFileBrowserShortcutAction({ key: "Backspace", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("delete");
     expect(getFileBrowserShortcutAction({ key: "a", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("select-all");
+    expect(getFileBrowserShortcutAction({ key: "g", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("goto");
   });
 
   it("ignores shortcuts when focus is in an editable target", () => {
