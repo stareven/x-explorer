@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { error } from "@tauri-apps/plugin-log";
 import { FileEntry, parentPath, useStore } from "../../store";
 import { tauriApi, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
 import { buildSearchIndex, compareSearchMatches, normalizeSearchQuery, rankSearchIndex } from "../../utils/search";
@@ -107,7 +108,7 @@ export function FileBrowser() {
     // USB/lockdownd connection; a short backoff usually recovers it.
     const list = await fetchList().catch((first) =>
       sleep(400).then(fetchList).catch((second) => {
-        console.error("Failed to load files:", first, second);
+        error(`Failed to load files: ${first}; ${second}`);
         return null;
       })
     );
@@ -277,7 +278,7 @@ export function FileBrowser() {
           await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
         }
       } catch (e) {
-        console.error(`Failed to enqueue upload for ${fileName}:`, e);
+        error(`Failed to enqueue upload for ${fileName}: ${e}`);
       }
     }
   }
@@ -325,7 +326,7 @@ export function FileBrowser() {
           await tauriApi.enqueueAndroidDownload(device.id, file.path, localPath, pkg);
         }
       } catch (e) {
-        console.error(`Failed to enqueue download for ${file.name}:`, e);
+        error(`Failed to enqueue download for ${file.name}: ${e}`);
       }
     }
   }
@@ -340,7 +341,7 @@ export function FileBrowser() {
           await tauriApi.androidDelete(device.id, file.path, pkg);
         }
       } catch (e) {
-        console.error(`Failed to delete ${file.name}:`, e);
+        error(`Failed to delete ${file.name}: ${e}`);
       }
     }
     clearSelection();

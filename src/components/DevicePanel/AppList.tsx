@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { error } from "@tauri-apps/plugin-log";
 import { AppInfo, useStore } from "../../store";
 import { tauriApi } from "../../hooks/useTauri";
 import { buildSearchIndex, compareSearchMatches, rankSearchIndex, SearchIndex } from "../../utils/search";
@@ -48,7 +49,7 @@ export function AppList() {
           setApps(list.map((app) => ({ ...app, search_index: buildSearchIndex(app.name, app.bundle_id) })).sort((a, b) => a.name.localeCompare(b.name)));
         }
       } catch (e) {
-        console.error("Failed to load apps:", e);
+        error(`Failed to load apps: ${e}`);
         if (!cancelled) {
           setApps([]);
         }

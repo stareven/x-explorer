@@ -17,6 +17,7 @@
 //! error.
 
 use crate::types::{AppInfo, Device, DownloadFile, FileEntry};
+use log::debug;
 use std::fs;
 use std::path::Path;
 
@@ -289,7 +290,7 @@ pub fn list_android_files(
     check_device_authorized(&device_id)?;
     let adb = crate::bin_path::resolve("adb")?;
     let package_label = package.as_deref().unwrap_or("<external-storage>");
-    eprintln!(
+    debug!(
         "[android:list] device={} package={} request_path={}",
         device_id, package_label, path
     );
@@ -302,12 +303,12 @@ pub fn list_android_files(
         }
         None => {
             let resolved_root = resolve_external_storage_root(&adb, &device_id)?;
-            eprintln!("[android:list] resolved_root={}", resolved_root);
+            debug!("[android:list] resolved_root={}", resolved_root);
             external_storage_paths(&path, &resolved_root)
                 .ok_or_else(|| "外部存储路径无效".to_string())?
         }
     };
-    eprintln!(
+    debug!(
         "[android:list] display_path={} command_path={}",
         display_path, command_path
     );
@@ -325,7 +326,7 @@ pub fn list_android_files(
     }
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let preview: String = text.lines().take(8).collect::<Vec<_>>().join(" | ");
-    eprintln!(
+    debug!(
         "[android:list] status={} stdout_lines={} stdout_preview={} stderr={}",
         out.status,
         text.lines().count(),

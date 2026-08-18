@@ -1,3 +1,4 @@
+import { error } from "@tauri-apps/plugin-log";
 import { useStore } from "../../store";
 import { tauriApi } from "../../hooks/useTauri";
 
@@ -29,7 +30,7 @@ export function useFileDrop() {
           await tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
         }
       } catch (e) {
-        console.error("Drop upload failed:", e);
+        error(`Drop upload failed: ${e}`);
       }
     }
   }

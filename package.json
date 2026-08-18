@@ -12,6 +12,7 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.2",
+    "@tauri-apps/plugin-log": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "pinyin-pro": "^3.29.2",
     "react": "^19.1.0",

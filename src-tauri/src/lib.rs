@@ -8,7 +8,26 @@ mod types;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    use tauri_plugin_log::{Target, TargetKind};
+
+    // Debug builds (`tauri dev`) log at Debug level to stdout; release builds
+    // (`tauri build`) log at Info level to a file in the OS logs directory.
+    let log_plugin = if cfg!(debug_assertions) {
+        tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Debug)
+            .targets([Target::new(TargetKind::Stdout)])
+            .build()
+    } else {
+        tauri_plugin_log::Builder::new()
+            .level(log::LevelFilter::Info)
+            .targets([Target::new(TargetKind::LogDir {
+                file_name: Some("x-explorer.log".into()),
+            })])
+            .build()
+    };
+
     tauri::Builder::default()
+        .plugin(log_plugin)
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
