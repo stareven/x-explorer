@@ -102,4 +102,26 @@ describe("AppList search", () => {
     expect(screen.getByPlaceholderText("搜索应用")).toHaveValue("");
     expect(screen.getByText("相机")).toBeInTheDocument();
   });
+
+  it("clears previous-device apps when switching devices (no residue)", async () => {
+    // Make the Android fetch never resolve: any leftover iOS apps would
+    // stay visible on screen until it completes, mirroring the production
+    // ~1.2s delay that exposed the residue bug.
+    vi.mocked(tauriApi.listAndroidApps).mockImplementation(
+      () => new Promise<AppInfo[]>(() => {}),
+    );
+
+    render(<AppList />);
+
+    await waitFor(() => expect(screen.getByText("备忘录")).toBeInTheDocument());
+
+    useStore.setState({ selectedDeviceId: "pixel-1" });
+
+    // Old iOS apps must be cleared synchronously when the device changes —
+    // not after the Android fetch completes. Otherwise they linger on
+    // screen for the full fetch duration (~1.2s in production).
+    await waitFor(() => expect(screen.queryByText("备忘录")).not.toBeInTheDocument());
+    expect(screen.queryByText("照片")).not.toBeInTheDocument();
+    expect(screen.queryByText("Files")).not.toBeInTheDocument();
+  });
 });

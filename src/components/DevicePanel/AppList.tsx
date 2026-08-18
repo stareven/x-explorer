@@ -34,8 +34,13 @@ export function AppList() {
 
   useEffect(() => {
     setAppSearch("");
+    // Clear the previous device's apps synchronously so they don't linger
+    // on screen during the next fetch (~1.2s in production). The early
+    // return below also clears them, but only when the new device is
+    // unusable — switching between two connected devices would otherwise
+    // show the old app list until the new fetch resolves.
+    setApps([]);
     if (!isUsable || !device) {
-      setApps([]);
       return;
     }
     let cancelled = false;
