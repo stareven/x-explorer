@@ -88,10 +88,13 @@ pub fn is_untrusted_error(stderr: &str) -> bool {
 }
 
 /// Runs `ideviceinfo -u <udid>` and returns a clear, user-facing error if the
-/// device is disconnected or hasn't approved this host yet. Called before any
-/// operation that would otherwise fail with a much less clear ifuse/idevice
-/// error further down the call chain (mount, list, download, upload, delete).
-fn check_ios_trusted(device_id: &str) -> Result<(), String> {
+/// device is disconnected or hasn't approved this host yet. Called once per
+/// job by `TransferQueue::run_job` (was previously called per file inside
+/// `ios_download` / `ios_upload` — N × 1.2s of pure idle overhead for an
+/// N-file folder). Also still called directly by `list_ios_files` and
+/// `ios_delete`, which run as one-shot tauri commands rather than through
+/// the transfer queue.
+pub(crate) fn check_ios_trusted(device_id: &str) -> Result<(), String> {
     let out = run_idevice("ideviceinfo", &["-u", device_id])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     if is_untrusted_error(&stderr) {
@@ -449,42 +452,47 @@ fn ios_download_recursive(device_id: &str, bundle_id: &str, remote: &str, local:
     }
 }
 
+/// Recursively walk the iOS document subtree, returning every leaf file with
+/// its absolute device-side path and its mirrored local destination path.
+///
+/// Optimization vs. the original (now-fixed) N+1 pattern: every directory
+/// level used to issue both `afcclient info <dir>` (to determine `is_dir`) and
+/// `afcclient -- ls -l <dir>` (to list entries). `ls -l`'s first column
+/// already encodes `is_dir` (`drwx…` vs `-rw-…`), so the `info` call per
+/// directory level is dropped. The fetcher and progress callback are passed
+/// in so the recursive walk can be unit-tested with fake listings and so the
+/// caller (prepare phase) can surface a growing "N files found" count to the
+/// UI during enumeration.
 fn collect_ios_download_files_recursive(
-    device_id: &str,
-    bundle_id: &str,
     remote: &str,
     user_remote: &str,
     local: &str,
     out: &mut Vec<DownloadFile>,
+    fetch_listing: &mut dyn FnMut(&str) -> Result<Vec<(String, AfcFileInfo)>, String>,
+    on_progress: &mut dyn FnMut(usize),
 ) -> Result<(), String> {
-    let info_out = run_afcclient(device_id, bundle_id, &["info", remote])?;
-    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
-    let info = parse_afcclient_info(&info_text).ok_or_else(|| "无法识别 iOS 文件信息".to_string())?;
-    if info.is_dir {
-        let ls_out = run_afcclient(device_id, bundle_id, &["--", "ls", "-l", remote])?;
-        let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
-        if !ls_out.status.success() || ls_text.contains("Error:") {
-            return Err(afc_error_message(ls_text.trim(), bundle_id));
-        }
-        for (name, _) in parse_afcclient_ls_long(&ls_text) {
-            let child_remote = crate::file_ops::join_path(remote, &name);
-            let child_user_remote = crate::file_ops::join_path(user_remote, &name);
-            let child_local = Path::new(local).join(&name);
+    let entries = fetch_listing(remote)?;
+    for (name, info) in entries {
+        let child_remote = crate::file_ops::join_path(remote, &name);
+        let child_user_remote = crate::file_ops::join_path(user_remote, &name);
+        let child_local = Path::new(local).join(&name);
+        if info.is_dir {
             collect_ios_download_files_recursive(
-                device_id,
-                bundle_id,
                 &child_remote,
                 &child_user_remote,
                 child_local.to_string_lossy().as_ref(),
                 out,
+                fetch_listing,
+                on_progress,
             )?;
+        } else {
+            out.push(DownloadFile {
+                remote_path: child_user_remote,
+                local_path: child_local.to_string_lossy().into_owned(),
+            });
         }
-    } else {
-        out.push(DownloadFile {
-            remote_path: user_remote.to_string(),
-            local_path: local.to_string(),
-        });
     }
+    on_progress(out.len());
     Ok(())
 }
 
@@ -493,33 +501,90 @@ pub fn collect_ios_download_files(
     bundle_id: &str,
     remote_path: &str,
     local_path: &str,
+    mut on_progress: impl FnMut(usize),
 ) -> Result<Vec<DownloadFile>, String> {
-    check_ios_trusted(device_id)?;
+    // Trust check is hoisted to TransferQueue::run_job; this function no longer
+    // re-runs it. The previous behavior called `ideviceinfo` here AND again
+    // per file inside the worker, which on a 50-file directory added ~60s of
+    // pure idle subprocess startup before any download began.
     let safe_remote = crate::file_ops::sanitize_relative_path(remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote = documents_path(&safe_remote);
     let user_remote = crate::file_ops::normalize_path(&safe_remote);
+
+    // Single top-level info call: we still need to know if the user-supplied
+    // path is a file or a directory before deciding whether to recurse. Once
+    // we're inside the recursion, `ls -l`'s first column (`drwx…` vs `-rw-…`)
+    // already encodes `is_dir`, so we drop the per-level `info` calls that
+    // the previous N+1 pattern issued.
+    let info_out = run_afcclient(device_id, bundle_id, &["info", &remote])?;
+    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+    let info = parse_afcclient_info(&info_text)
+        .ok_or_else(|| "无法识别 iOS 文件信息".to_string())?;
+
     let mut files = Vec::new();
-    collect_ios_download_files_recursive(device_id, bundle_id, &remote, &user_remote, local_path, &mut files)?;
+    if info.is_dir {
+        let mut fetch_listing = |remote_dir: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            let ls_out = run_afcclient(device_id, bundle_id, &["--", "ls", "-l", remote_dir])?;
+            let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
+            if !ls_out.status.success() || ls_text.contains("Error:") {
+                return Err(afc_error_message(ls_text.trim(), bundle_id));
+            }
+            Ok(parse_afcclient_ls_long(&ls_text))
+        };
+        collect_ios_download_files_recursive(
+            &remote,
+            &user_remote,
+            local_path,
+            &mut files,
+            &mut fetch_listing,
+            &mut on_progress,
+        )?;
+        on_progress(files.len());
+    } else {
+        files.push(DownloadFile {
+            remote_path: user_remote,
+            local_path: local_path.to_string(),
+        });
+        on_progress(files.len());
+    }
     Ok(files)
 }
 
 /// Download a single file or directory tree from an iOS app container.
+/// Trust check is hoisted to `TransferQueue::run_job`; this function no longer
+/// re-runs it.
 pub fn ios_download_dir(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
-    check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote = documents_path(&safe_remote);
     ios_download_recursive(&device_id, &bundle_id, &remote, &local_path)
 }
 
+/// Fast path for a known-file download (the only path actually reached from
+/// `run_op(JobOp::IosDownload)`, since `prepare_ops` expands every directory
+/// into per-file ops before the worker touches them). Skips both the trust
+/// check (hoisted) and the per-file `info` probe (the file vs dir
+/// distinction is already resolved by `collect_ios_download_files`).
 pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, local_path: String) -> Result<(), String> {
-    ios_download_dir(device_id, bundle_id, remote_path, local_path)
+    let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    let remote = documents_path(&safe_remote);
+    if let Some(parent) = Path::new(&local_path).parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let out = run_afcclient(&device_id, &bundle_id, &["get", &remote, &local_path])?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        Err(afc_error_message(&stderr, &bundle_id))
+    }
 }
 
 /// Not a #[tauri::command] — called internally by transfer_queue only.
+/// Trust check is hoisted to `TransferQueue::run_job`.
 pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remote_path: String) -> Result<(), String> {
-    check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote = documents_path(&safe_remote);
@@ -757,5 +822,200 @@ mod tests {
     fn test_afc_error_message_falls_back_to_raw_stderr() {
         let msg = afc_error_message("some other error", "com.example.app");
         assert_eq!(msg, "some other error");
+    }
+
+    /// Helper: build a non-directory AfcFileInfo with the given size.
+    fn file_info(size: u64) -> AfcFileInfo {
+        AfcFileInfo { is_dir: false, size, modified: None }
+    }
+
+    /// Helper: build a directory AfcFileInfo.
+    fn dir_info() -> AfcFileInfo {
+        AfcFileInfo { is_dir: true, size: 0, modified: None }
+    }
+
+    /// Counts of progress callback invocations are captured here. Uses
+    /// `Rc<RefCell<_>>` so both the returned callback and the returned counts
+    /// handle point at the same underlying Vec — `RefCell::clone()` is a deep
+    /// copy and would not share the buffer.
+    fn make_progress_recorder() -> (
+        impl FnMut(usize),
+        std::rc::Rc<std::cell::RefCell<Vec<usize>>>,
+    ) {
+        let counts: std::rc::Rc<std::cell::RefCell<Vec<usize>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let counts_cell = counts.clone();
+        let cb = move |n: usize| {
+            counts_cell.borrow_mut().push(n);
+        };
+        (cb, counts)
+    }
+
+    /// New behavior: the recursive walk uses `is_dir` from `ls -l`'s metadata
+    /// directly and accepts a listing fetcher + progress callback for testability.
+    #[test]
+    fn test_collect_ios_download_files_recursive_collects_files_from_flat_dir() {
+        let mut fetch = |_remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            Ok(vec![
+                ("a.txt".to_string(), file_info(1)),
+                ("b.txt".to_string(), file_info(2)),
+            ])
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<DownloadFile> = Vec::new();
+        collect_ios_download_files_recursive(
+            "/root",
+            "/root",
+            "/local",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].remote_path, "/root/a.txt");
+        assert_eq!(out[0].local_path, "/local/a.txt");
+        assert_eq!(out[1].remote_path, "/root/b.txt");
+        assert_eq!(out[1].local_path, "/local/b.txt");
+    }
+
+    /// Subdirectories are recursed; their leaves are pushed with nested
+    /// relative paths that mirror the directory tree shape.
+    #[test]
+    fn test_collect_ios_download_files_recursive_recurses_into_subdirs() {
+        let mut fetch = |remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            match remote {
+                "/root" => Ok(vec![
+                    ("a.txt".to_string(), file_info(1)),
+                    ("sub".to_string(), dir_info()),
+                ]),
+                "/root/sub" => Ok(vec![
+                    ("b.txt".to_string(), file_info(2)),
+                ]),
+                _ => Err(format!("unexpected fetch: {remote}")),
+            }
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<DownloadFile> = Vec::new();
+        collect_ios_download_files_recursive(
+            "/root",
+            "/root",
+            "/local",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].remote_path, "/root/a.txt");
+        assert_eq!(out[1].remote_path, "/root/sub/b.txt");
+        assert_eq!(out[1].local_path, "/local/sub/b.txt");
+    }
+
+    /// Each directory level reports its cumulative file count to the progress
+    /// callback, so the caller can surface "preparing... N found" to the UI.
+    /// For a leaf dir the count after processing equals the cumulative total;
+    /// nested dirs emit once per level (leaf first, then parents as recursion
+    /// unwinds), which lets the UI show the count growing as the walker goes
+    /// deeper.
+    #[test]
+    fn test_collect_ios_download_files_recursive_emits_progress_per_level() {
+        let mut fetch = |remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            match remote {
+                "/root" => Ok(vec![
+                    ("a.txt".to_string(), file_info(1)),
+                    ("sub".to_string(), dir_info()),
+                ]),
+                "/root/sub" => Ok(vec![
+                    ("b.txt".to_string(), file_info(2)),
+                ]),
+                _ => Err(format!("unexpected fetch: {remote}")),
+            }
+        };
+        let (mut progress, counts) = make_progress_recorder();
+        let mut out: Vec<DownloadFile> = Vec::new();
+        collect_ios_download_files_recursive(
+            "/root",
+            "/root",
+            "/local",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap();
+        // /root/sub emits after its single leaf (count = 2); /root emits again
+        // after the recursion returns (count still 2). Both reports show the
+        // cumulative file count discovered so far.
+        assert_eq!(*counts.borrow(), vec![2, 2]);
+        assert_eq!(out.len(), 2);
+    }
+
+    /// Errors from the listing fetcher propagate immediately rather than being
+    /// silently swallowed.
+    #[test]
+    fn test_collect_ios_download_files_recursive_propagates_fetch_errors() {
+        let mut fetch = |remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            if remote == "/root" {
+                Err("Permission denied (10)".to_string())
+            } else {
+                Ok(vec![])
+            }
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<DownloadFile> = Vec::new();
+        let err = collect_ios_download_files_recursive(
+            "/root",
+            "/root",
+            "/local",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(err.contains("Permission denied"), "expected permission error, got: {err}");
+        assert!(out.is_empty());
+    }
+
+    /// After the hoist, `ios_download` does not run `check_ios_trusted`. With
+    /// a traversal path on a non-existent device, the error must come from
+    /// path sanitization, never from a trust/untrust check.
+    #[test]
+    fn test_ios_download_sanitizes_remote_path_before_subprocess() {
+        let result = ios_download(
+            "nonexistent-device-zzz".to_string(),
+            "com.example.bundle".to_string(),
+            "../etc/passwd".to_string(),
+            "/tmp/x".to_string(),
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("上级目录") || err.contains("路径"),
+            "expected sanitize error, got: {err}"
+        );
+        assert!(
+            !err.contains("未连接") && !err.contains("信任"),
+            "trust check should not run, got: {err}"
+        );
+    }
+
+    /// Mirror of the above for `ios_upload`: the trust check used to run
+    /// before path sanitization; it must no longer run inside this function.
+    #[test]
+    fn test_ios_upload_sanitizes_remote_path_before_subprocess() {
+        let result = ios_upload(
+            "nonexistent-device-zzz".to_string(),
+            "com.example.bundle".to_string(),
+            "/tmp/local-file".to_string(),
+            "../etc/passwd".to_string(),
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("上级目录") || err.contains("路径"),
+            "expected sanitize error, got: {err}"
+        );
+        assert!(
+            !err.contains("未连接") && !err.contains("信任"),
+            "trust check should not run, got: {err}"
+        );
     }
 }

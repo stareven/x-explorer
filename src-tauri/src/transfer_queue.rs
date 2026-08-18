@@ -92,6 +92,21 @@ impl TransferQueue {
     fn run_job(&self, handle: &AppHandle, job: Job) {
         let Job { mut task, ops } = job;
 
+        // Trust check once per job (was previously called per file inside
+        // `ios_download` / `ios_upload`, and again from
+        // `collect_ios_download_files` — N × ~1.2s of pure idle subprocess
+        // startup for an N-file folder). The check only matters for iOS jobs;
+        // for Android jobs we skip it entirely.
+        if let Some(device_id) = ops.iter().find_map(ios_device_id) {
+            if let Err(e) = crate::ios_client::check_ios_trusted(&device_id) {
+                task.status = "error".to_string();
+                task.error = Some(e);
+                self.tasks.lock().unwrap().insert(task.id.clone(), task.clone());
+                emit_progress(handle, &task);
+                return;
+            }
+        }
+
         {
             let mut tasks = self.tasks.lock().unwrap();
             if is_cancelled(&tasks, &task.id) {
@@ -102,7 +117,7 @@ impl TransferQueue {
         }
         emit_progress(handle, &task);
 
-        let ops = match prepare_ops(ops) {
+        let ops = match prepare_ops(handle, &task, ops) {
             Ok(ops) => ops,
             Err(e) => {
                 task.status = "error".to_string();
@@ -273,12 +288,30 @@ fn build_download_ops(device_id: &str, bundle_id: Option<&str>, package: Option<
         .collect()
 }
 
-fn prepare_ops(ops: Vec<JobOp>) -> Result<Vec<JobOp>, String> {
+fn prepare_ops(handle: &AppHandle, task: &TransferTask, ops: Vec<JobOp>) -> Result<Vec<JobOp>, String> {
     let mut prepared = Vec::new();
     for op in ops {
         match op {
             JobOp::IosDownloadDir { device_id, bundle_id, remote_path, local_path } => {
-                let files = crate::ios_client::collect_ios_download_files(&device_id, &bundle_id, &remote_path, &local_path)?;
+                // Closure captures handle + task by reference. For each
+                // directory level the recursive walk reports the cumulative
+                // file count discovered so far; we surface it to the UI via
+                // emit_progress with growing `total_files` while `status`
+                // stays "running", so the transfer panel can show
+                // "preparing... N found" via its existing rendering without
+                // any frontend changes.
+                let mut on_progress = |discovered: usize| {
+                    let mut snapshot = task.clone();
+                    snapshot.total_files = discovered.max(1) as u64;
+                    emit_progress(handle, &snapshot);
+                };
+                let files = crate::ios_client::collect_ios_download_files(
+                    &device_id,
+                    &bundle_id,
+                    &remote_path,
+                    &local_path,
+                    &mut on_progress,
+                )?;
                 prepared.extend(build_ios_download_file_ops(&device_id, &bundle_id, &files));
             }
             JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } => {
@@ -295,6 +328,18 @@ fn prepare_ops(ops: Vec<JobOp>) -> Result<Vec<JobOp>, String> {
         }
     }
     Ok(prepared)
+}
+
+/// Extracts the device id from an iOS job op. Returns None for Android ops,
+/// which use a different trust mechanism.
+fn ios_device_id(op: &JobOp) -> Option<&str> {
+    match op {
+        JobOp::IosDownload { device_id, .. }
+        | JobOp::IosDownloadDir { device_id, .. }
+        | JobOp::IosUpload { device_id, .. }
+        | JobOp::IosDelete { device_id, .. } => Some(device_id),
+        _ => None,
+    }
 }
 
 fn build_ios_download_file_ops(device_id: &str, bundle_id: &str, files: &[DownloadFile]) -> Vec<JobOp> {
