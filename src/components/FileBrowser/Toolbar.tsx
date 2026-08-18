@@ -45,12 +45,6 @@ export const Toolbar = forwardRef<HTMLInputElement, ToolbarProps>(function Toolb
       <button onClick={onBookmark} className={navBtn} aria-label="收藏当前目录" title="收藏当前目录">
         ☆
       </button>
-      <button
-        onClick={onImport}
-        className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
-      >
-        导入
-      </button>
       <input
         ref={searchInputRef}
         value={searchValue}
@@ -59,6 +53,12 @@ export const Toolbar = forwardRef<HTMLInputElement, ToolbarProps>(function Toolb
         aria-label="搜索文件"
         className="w-48 min-w-0 px-2 py-1 text-xs bg-gray-800 text-gray-200 border border-gray-600 rounded placeholder:text-gray-500 focus:outline-none focus:border-blue-500"
       />
+      <button
+        onClick={onImport}
+        className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+      >
+        导入
+      </button>
       {selectedCount > 0 && (
         <>
           <button
