@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppInfo, useStore } from "../../store";
 import { tauriApi } from "../../hooks/useTauri";
 import { buildSearchIndex, compareSearchMatches, rankSearchIndex, SearchIndex } from "../../utils/search";
+import { FOCUS_APP_SEARCH_EVENT } from "../FileBrowser";
 
 interface IndexedAppInfo extends AppInfo {
   search_index: SearchIndex;
@@ -16,9 +17,19 @@ export function AppList() {
   const toggleFavoriteApp = useStore((s) => s.toggleFavoriteApp);
   const [apps, setApps] = useState<IndexedAppInfo[]>([]);
   const [appSearch, setAppSearch] = useState("");
+  const appSearchInputRef = useRef<HTMLInputElement>(null);
 
   const device = devices.find((d) => d.id === selectedDeviceId);
   const isUsable = device && device.status === "connected";
+
+  useEffect(() => {
+    const handler = () => {
+      appSearchInputRef.current?.focus();
+      appSearchInputRef.current?.select();
+    };
+    window.addEventListener(FOCUS_APP_SEARCH_EVENT, handler);
+    return () => window.removeEventListener(FOCUS_APP_SEARCH_EVENT, handler);
+  }, []);
 
   useEffect(() => {
     setAppSearch("");
@@ -100,6 +111,7 @@ export function AppList() {
     <div className="p-2 border-t border-gray-700">
       <p className="text-xs font-semibold text-gray-400 uppercase px-2 mb-1">应用</p>
       <input
+        ref={appSearchInputRef}
         value={appSearch}
         onChange={(e) => setAppSearch(e.target.value)}
         placeholder="搜索应用"

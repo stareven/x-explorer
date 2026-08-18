@@ -7,9 +7,12 @@ export type FileBrowserShortcutAction =
   | "download"
   | "delete"
   | "select-all"
-  | "goto";
+  | "goto"
+  | "search-files"
+  | "search-apps";
 
-type ShortcutEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "target">;
+type ShortcutEvent = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "target"> &
+  Partial<Pick<KeyboardEvent, "shiftKey">>;
 
 export function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -33,9 +36,18 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 
 export function getFileBrowserShortcutAction(event: ShortcutEvent): FileBrowserShortcutAction | null {
   if (!event.metaKey || event.ctrlKey || event.altKey) return null;
-  if (isEditableTarget(event.target)) return null;
 
   const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+
+  // Cmd+F / Cmd+Shift+F focus the search inputs and should work even when
+  // focus is already inside an editable target (e.g. re-focusing the search
+  // box), so check them before the editable-target guard below.
+  if (key === "f") {
+    return event.shiftKey ? "search-apps" : "search-files";
+  }
+
+  if (isEditableTarget(event.target)) return null;
+
   switch (key) {
     case "[":
       return "back";

@@ -1,3 +1,4 @@
+import { forwardRef } from "react";
 import { useStore } from "../../store";
 
 interface ToolbarProps {
@@ -17,7 +18,10 @@ interface ToolbarProps {
   onSearchChange: (value: string) => void;
 }
 
-export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoForward, onForward, canGoUp, onUp, onRefresh, onBookmark, searchValue, onSearchChange }: ToolbarProps) {
+export const Toolbar = forwardRef<HTMLInputElement, ToolbarProps>(function Toolbar(
+  { selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoForward, onForward, canGoUp, onUp, onRefresh, onBookmark, searchValue, onSearchChange },
+  searchInputRef,
+) {
   const viewMode = useStore((s) => s.viewMode);
   const setViewMode = useStore((s) => s.setViewMode);
 
@@ -48,6 +52,7 @@ export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack
         导入
       </button>
       <input
+        ref={searchInputRef}
         value={searchValue}
         onChange={(e) => onSearchChange(e.target.value)}
         placeholder="搜索文件"
@@ -88,4 +93,4 @@ export function Toolbar({ selectedCount, onImport, onExport, onDelete, canGoBack
       </div>
     </div>
   );
-}
+});

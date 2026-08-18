@@ -23,6 +23,11 @@ function cacheKey(platform: string, deviceId: string, pkg: string | undefined, p
   return `${platform}:${deviceId}:${pkg ?? "-"}:${path}`;
 }
 
+// Cmd+Shift+F should focus the app search box in the sibling DevicePanel.
+// FileBrowser has no direct reference to that component, so it's signaled
+// via a window event rather than threading a ref/callback across the tree.
+export const FOCUS_APP_SEARCH_EVENT = "focus-app-search";
+
 export function FileBrowser() {
   const selectedDeviceId = useStore((s) => s.selectedDeviceId);
   const browseTarget = useStore((s) => s.browseTarget);
@@ -47,6 +52,7 @@ export function FileBrowser() {
   const [fileSearch, setFileSearch] = useState("");
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; actions: { label: string; onAction: () => void }[] } | null>(null);
   const [showGoToPath, setShowGoToPath] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTerm = normalizeSearchQuery(fileSearch);
   const visibleFiles = useMemo(
     () =>
@@ -202,6 +208,13 @@ export function FileBrowser() {
           break;
         case "goto":
           setShowGoToPath(true);
+          break;
+        case "search-files":
+          searchInputRef.current?.focus();
+          searchInputRef.current?.select();
+          break;
+        case "search-apps":
+          window.dispatchEvent(new Event(FOCUS_APP_SEARCH_EVENT));
           break;
       }
     };
@@ -366,6 +379,7 @@ export function FileBrowser() {
     >
       <BreadcrumbBar />
       <Toolbar
+        ref={searchInputRef}
         selectedCount={selectedVisibleFiles.length}
         onImport={handleImport}
         onExport={handleExport}
