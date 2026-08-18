@@ -17,10 +17,37 @@ pub fn resolve(name: &str) -> Result<PathBuf, String> {
     ))
 }
 
-/// First executable `name` found in the PATH environment variable.
+/// First executable `name` found in the PATH environment variable,
+/// with a fallback to well-known macOS tool directories if not on PATH.
+///
+/// The fallback matters for macOS GUI apps: `.app` bundles launched via
+/// Finder/Launchpad don't inherit the user's shell PATH — they get only
+/// Apple's minimal default (`/usr/bin:/bin:/usr/sbin:/sbin`), which makes
+/// Homebrew-installed tools (in `/opt/homebrew/bin` or `/usr/local/bin`)
+/// and `~/bin` invisible. We search those locations explicitly so the app
+/// can resolve `idevice_id`, `afcclient`, `adb`, etc. when launched normally.
 fn find_in_path(name: &str) -> Option<PathBuf> {
-    let paths = std::env::var_os("PATH")?;
-    find_in_paths(name, std::env::split_paths(&paths).map(|p| p.to_string_lossy().to_string()))
+    let mut dirs: Vec<String> = Vec::new();
+    if let Some(paths) = std::env::var_os("PATH") {
+        for d in std::env::split_paths(&paths) {
+            dirs.push(d.to_string_lossy().to_string());
+        }
+    }
+    dirs.extend(fallback_dirs());
+    find_in_paths(name, dirs.into_iter())
+}
+
+/// Well-known tool directories that may not be on PATH inside a macOS
+/// `.app` bundle launched via Finder/Launchpad.
+fn fallback_dirs() -> Vec<String> {
+    let mut dirs: Vec<String> = vec![
+        "/opt/homebrew/bin".to_string(), // Homebrew on Apple Silicon
+        "/usr/local/bin".to_string(),    // Homebrew on Intel macs
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(format!("{}/bin", home.to_string_lossy()));
+    }
+    dirs
 }
 
 fn find_in_paths<I: Iterator<Item = String>>(name: &str, dirs: I) -> Option<PathBuf> {
@@ -98,6 +125,41 @@ mod tests {
         assert_eq!(brew_hint("ideviceinstaller"), "brew install ideviceinstaller");
         assert_eq!(brew_hint("afcclient"), "brew install libimobiledevice");
         assert_eq!(brew_hint("ideviceinfo"), "brew install libimobiledevice");
+    }
+
+    #[test]
+    fn test_fallback_dirs_includes_apple_silicon_homebrew() {
+        let dirs = fallback_dirs();
+        assert!(
+            dirs.iter().any(|d| d == "/opt/homebrew/bin"),
+            "expected /opt/homebrew/bin in fallback dirs, got {:?}",
+            dirs
+        );
+    }
+
+    #[test]
+    fn test_fallback_dirs_includes_intel_homebrew() {
+        let dirs = fallback_dirs();
+        assert!(
+            dirs.iter().any(|d| d == "/usr/local/bin"),
+            "expected /usr/local/bin in fallback dirs, got {:?}",
+            dirs
+        );
+    }
+
+    #[test]
+    fn test_fallback_dirs_includes_home_bin_when_home_set() {
+        let Some(home) = std::env::var_os("HOME") else {
+            return;
+        };
+        let dirs = fallback_dirs();
+        let expected = format!("{}/bin", home.to_string_lossy());
+        assert!(
+            dirs.iter().any(|d| d == &expected),
+            "expected {:?} in fallback dirs, got {:?}",
+            expected,
+            dirs
+        );
     }
 
     #[cfg(unix)]
