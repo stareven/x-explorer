@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEven
 import { open } from "@tauri-apps/plugin-dialog";
 import { error } from "@tauri-apps/plugin-log";
 import { FileEntry, parentPath, useStore } from "../../store";
-import { tauriApi, enqueueDeleteBatch, enqueueUploadBatch, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
+import { tauriApi, enqueueDeleteBatch, enqueueDeleteDir, enqueueUploadBatch, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
 import { buildSearchIndex, compareSearchMatches, normalizeSearchQuery, rankSearchIndex } from "../../utils/search";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { Toolbar } from "./Toolbar";
@@ -383,16 +383,27 @@ export function FileBrowser() {
   async function handleDelete() {
     if (!device || !window.confirm(`删除选中的 ${selectedVisibleFiles.length} 个文件？`)) return;
     const selectedFiles = selectedVisibleFiles;
-    const remotePaths = selectedFiles.map((file) => file.path);
+    // Directories go through the new expander (one task per directory —
+    // each task is itself a parallelized batch with a serial dir-rmdir
+    // follow-up). Multiple directory tasks can run concurrently across the
+    // 3 worker threads.
+    const dirs = selectedFiles.filter((f) => f.is_dir);
+    const files = selectedFiles.filter((f) => !f.is_dir);
+
+    const taskIds: string[] = [];
     try {
-      // Batch enqueue only — the deletes run async on the backend worker
-      // pool. Pulling the listing right after enqueue would fetch a snapshot
-      // taken before the deletes land and cache that stale state (see git
-      // blame for the original mistake). The reload is deferred to the
-      // matching `transfer-progress` `done` event in the listener above, by
-      // which point the device's directory state is guaranteed settled.
-      const taskId = await enqueueDeleteBatch(device, pkg, remotePaths);
-      rememberPendingReload(taskId);
+      for (const dir of dirs) {
+        taskIds.push(await enqueueDeleteDir(device, pkg, dir.path));
+      }
+      if (files.length > 0) {
+        const filePaths = files.map((f) => f.path);
+        taskIds.push(await enqueueDeleteBatch(device, pkg, filePaths));
+      }
+      // Register every task id so the transfer-progress listener refreshes the
+      // directory listing when each one finishes.
+      for (const id of taskIds) {
+        rememberPendingReload(id);
+      }
     } catch (e) {
       error(`Failed to enqueue delete: ${e}`);
     }
