@@ -729,34 +729,24 @@ fn afc_remove(device_id: &str, bundle_id: &str, remote: &str) -> Result<(), Stri
     }
 }
 
-/// Depth-first recursive delete: `info` tells us whether `remote` is a
-/// directory; if so, `ls` it, recurse into every entry, then remove the
-/// now-empty directory itself. Files are removed directly.
-fn afc_remove_recursive(device_id: &str, bundle_id: &str, remote: &str) -> Result<(), String> {
-    let info_out = run_afcclient(device_id, bundle_id, &["info", remote])?;
-    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
-    if let Some(info) = parse_afcclient_info(&info_text) {
-        if info.is_dir {
-            let ls_out = run_afcclient(device_id, bundle_id, &["ls", remote])?;
-            let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
-            for name in parse_afcclient_ls(&ls_text) {
-                let child = crate::file_ops::join_path(remote, &name);
-                afc_remove_recursive(device_id, bundle_id, &child)?;
-            }
-        }
-    }
-    afc_remove(device_id, bundle_id, remote)
-}
-
 /// Single-path iOS delete. Only invoked through the transfer queue via
-/// `JobOp::IosDelete` (e.g. an empty directory selected by the user, or the
-/// fallback path for non-`IosDeleteDir` deletes). The trust check is hoisted
-/// to `TransferQueue::run_job` and runs once per iOS job — re-running it here
-/// was adding ~1.2s of pure idle spawn per delete for no security benefit.
+/// `JobOp::IosDelete`, which is fed by two paths:
+/// 1. `prepare_ops` expanding an `IosDeleteDir` marker into per-file leaf ops
+///    (main parallel wave) plus per-empty-dir ops (serial follow-up wave).
+///    The walker already knows `is_dir` for every target — at the time this
+///    function runs, files are files and empty dirs are empty dirs.
+/// 2. The legacy `enqueue_ios_delete` single-path entry (files only; directories
+///    must go through `enqueue_ios_delete_dir`).
+///
+/// In both cases the target is a leaf, so we just `afcclient rm` it — no
+/// `info` probe (which would add a redundant ~1.2s of subprocess spawn per
+/// delete) and no recursive walk (the main walker already handles recursion).
+/// The trust check is hoisted to `TransferQueue::run_job` and runs once per
+/// iOS job, not per op.
 pub fn ios_delete(device_id: String, bundle_id: String, remote_path: String) -> Result<(), String> {
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
-    afc_remove_recursive(&device_id, &bundle_id, &documents_path(&safe_remote))
+    afc_remove(&device_id, &bundle_id, &documents_path(&safe_remote))
 }
 
 #[cfg(test)]
