@@ -884,6 +884,55 @@ mod tests {
     }
 
     #[test]
+    fn test_build_batch_job_with_follow_up_combines_main_and_follow_up_into_total() {
+        let ops = vec![
+            JobOp::IosDelete {
+                device_id: "dev".into(),
+                bundle_id: "b".into(),
+                remote_path: "root/a.txt".into(),
+            },
+            JobOp::IosDelete {
+                device_id: "dev".into(),
+                bundle_id: "b".into(),
+                remote_path: "root/b.txt".into(),
+            },
+        ];
+        let follow_up = vec![
+            JobOp::IosDelete {
+                device_id: "dev".into(),
+                bundle_id: "b".into(),
+                remote_path: "root".into(),
+            },
+        ];
+        let job = build_batch_job_with_follow_up("delete", "root", "root", ops, follow_up);
+
+        // total_files = main.len() + follow_up.len() (capped at >=1)
+        assert_eq!(job.task.total_files, 3);
+        assert_eq!(job.ops.len(), 2);
+        assert_eq!(job.follow_up.len(), 1);
+        // No completed files yet, status still pending — Job hasn't been enqueued.
+        assert_eq!(job.task.completed_files, 0);
+        assert_eq!(job.task.status, "pending");
+    }
+
+    #[test]
+    fn test_build_batch_job_with_follow_up_handles_empty_follow_up() {
+        // Single-op job (no follow-up) still works through the with_follow_up
+        // helper — total_files should equal ops.len().
+        let ops = vec![
+            JobOp::IosDelete {
+                device_id: "dev".into(),
+                bundle_id: "b".into(),
+                remote_path: "file.txt".into(),
+            },
+        ];
+        let job = build_batch_job_with_follow_up("delete", "file.txt", "file.txt", ops, vec![]);
+        assert_eq!(job.task.total_files, 1);
+        assert_eq!(job.ops.len(), 1);
+        assert!(job.follow_up.is_empty());
+    }
+
+    #[test]
     fn test_enqueue_creates_pending_task_before_worker_picks_it_up() {
         let tasks: Arc<Mutex<HashMap<String, TransferTask>>> = Arc::new(Mutex::new(HashMap::new()));
         let id = Uuid::new_v4().to_string();
