@@ -396,18 +396,18 @@ fn build_download_ops(device_id: &str, bundle_id: Option<&str>, package: Option<
         .collect()
 }
 
-fn prepare_ops(handle: &AppHandle, task: &TransferTask, ops: Vec<JobOp>) -> Result<Vec<JobOp>, String> {
-    let mut prepared = Vec::new();
+fn prepare_ops(
+    handle: &AppHandle,
+    task: &TransferTask,
+    ops: Vec<JobOp>,
+) -> Result<(Vec<JobOp>, Vec<JobOp>), String> {
+    let mut main = Vec::new();
+    let mut follow_up = Vec::new();
     for op in ops {
         match op {
             JobOp::IosDownloadDir { device_id, bundle_id, remote_path, local_path } => {
-                // Closure captures handle + task by reference. For each
-                // directory level the recursive walk reports the cumulative
-                // file count discovered so far; we surface it to the UI via
-                // emit_progress with growing `total_files` while `status`
-                // stays "running", so the transfer panel can show
-                // "preparing... N found" via its existing rendering without
-                // any frontend changes.
+                // Same progress-callback pattern as downloads — surfaces
+                // "preparing... N found" to the UI as the walker descends.
                 let mut on_progress = |discovered: usize| {
                     let mut snapshot = task.clone();
                     snapshot.total_files = discovered.max(1) as u64;
@@ -420,7 +420,39 @@ fn prepare_ops(handle: &AppHandle, task: &TransferTask, ops: Vec<JobOp>) -> Resu
                     &local_path,
                     &mut on_progress,
                 )?;
-                prepared.extend(build_ios_download_file_ops(&device_id, &bundle_id, &files));
+                main.extend(build_ios_download_file_ops(&device_id, &bundle_id, &files));
+            }
+            JobOp::IosDeleteDir { device_id, bundle_id, remote_path } => {
+                // Walk the subtree once with `ls -l` (single subprocess per
+                // directory level; same trick that dropped `info` calls in the
+                // download path). Split the result:
+                //   - files → main (run in parallel as leaf `rm` ops)
+                //   - dirs  → follow_up (run after the main wave, in the
+                //     topological order produced by the walker — a parent's
+                //     `rmdir` always comes after its descendants' removal).
+                let mut on_progress = |discovered: usize| {
+                    let mut snapshot = task.clone();
+                    snapshot.total_files = discovered.max(1) as u64;
+                    emit_progress(handle, &snapshot);
+                };
+                let targets = crate::ios_client::collect_ios_delete_targets(
+                    &device_id,
+                    &bundle_id,
+                    &remote_path,
+                    &mut on_progress,
+                )?;
+                for target in targets {
+                    let op = JobOp::IosDelete {
+                        device_id: device_id.clone(),
+                        bundle_id: bundle_id.clone(),
+                        remote_path: target.remote_path,
+                    };
+                    if target.is_dir {
+                        follow_up.push(op);
+                    } else {
+                        main.push(op);
+                    }
+                }
             }
             JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } => {
                 let files = crate::android_client::collect_android_download_files(
@@ -430,12 +462,12 @@ fn prepare_ops(handle: &AppHandle, task: &TransferTask, ops: Vec<JobOp>) -> Resu
                     package.clone(),
                     true,
                 )?;
-                prepared.extend(build_android_download_file_ops(&device_id, package.as_ref(), &files));
+                main.extend(build_android_download_file_ops(&device_id, package.as_ref(), &files));
             }
-            op => prepared.push(op),
+            op => main.push(op),
         }
     }
-    Ok(prepared)
+    Ok((main, follow_up))
 }
 
 /// Extracts the device id from an iOS job op. Returns None for Android ops,
