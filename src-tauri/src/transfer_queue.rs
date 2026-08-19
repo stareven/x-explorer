@@ -721,6 +721,21 @@ pub fn enqueue_ios_delete(
 }
 
 #[tauri::command]
+pub fn enqueue_ios_delete_dir(
+    device_id: String,
+    bundle_id: String,
+    remote_path: String,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let op = JobOp::IosDeleteDir {
+        device_id,
+        bundle_id,
+        remote_path: remote_path.clone(),
+    };
+    state.enqueue("delete", &remote_path, &remote_path, op)
+}
+
+#[tauri::command]
 pub fn enqueue_android_download_batch(
     device_id: String,
     files: Vec<FileTransferItem>,
