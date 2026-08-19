@@ -43,7 +43,6 @@ pub fn run() {
             ios_client::list_ios_apps,
             ios_client::list_ios_files,
             ios_client::enqueue_ios_file_info,
-            ios_client::ios_delete,
             android_client::list_android_devices,
             android_client::list_android_apps,
             android_client::list_android_files,

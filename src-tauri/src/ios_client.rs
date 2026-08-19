@@ -748,9 +748,12 @@ fn afc_remove_recursive(device_id: &str, bundle_id: &str, remote: &str) -> Resul
     afc_remove(device_id, bundle_id, remote)
 }
 
-#[tauri::command(async)]
+/// Single-path iOS delete. Only invoked through the transfer queue via
+/// `JobOp::IosDelete` (e.g. an empty directory selected by the user, or the
+/// fallback path for non-`IosDeleteDir` deletes). The trust check is hoisted
+/// to `TransferQueue::run_job` and runs once per iOS job — re-running it here
+/// was adding ~1.2s of pure idle spawn per delete for no security benefit.
 pub fn ios_delete(device_id: String, bundle_id: String, remote_path: String) -> Result<(), String> {
-    check_ios_trusted(&device_id)?;
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     afc_remove_recursive(&device_id, &bundle_id, &documents_path(&safe_remote))
