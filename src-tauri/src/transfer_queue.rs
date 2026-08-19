@@ -22,6 +22,11 @@ pub enum JobOp {
     IosDownloadDir { device_id: String, bundle_id: String, remote_path: String, local_path: String },
     IosUpload { device_id: String, bundle_id: String, local_path: String, remote_path: String },
     IosDelete { device_id: String, bundle_id: String, remote_path: String },
+    /// Marker op for a directory deletion; expanded by `prepare_ops` into a
+    /// flat list of leaf-file `IosDelete` ops (run in parallel as the main
+    /// wave) plus a sequential follow-up of empty-directory `IosDelete` ops
+    /// (run after the main wave in topological order).
+    IosDeleteDir { device_id: String, bundle_id: String, remote_path: String },
     AndroidDownload { device_id: String, remote_path: String, local_path: String, package: Option<String> },
     AndroidDownloadDir { device_id: String, remote_path: String, local_path: String, package: Option<String> },
     AndroidUpload { device_id: String, local_path: String, remote_path: String, package: Option<String> },
@@ -31,6 +36,11 @@ pub enum JobOp {
 struct Job {
     task: TransferTask,
     ops: Vec<JobOp>,
+    /// Ops to run *after* `ops` completes, in order. Used by `IosDeleteDir`
+    /// expansion to run directory `rmdir` ops after their leaf files have all
+    /// been removed (parallel main + serial follow-up). Empty for jobs that
+    /// don't need a post-pass (uploads, downloads, file-only deletes).
+    follow_up: Vec<JobOp>,
 }
 
 /// RAII guard that decrements `running_count` when dropped, ensuring the counter
@@ -173,7 +183,18 @@ impl TransferQueue {
     }
 
     pub fn enqueue_batch(&self, kind: &str, src: &str, dst: &str, ops: Vec<JobOp>) -> String {
-        let job = build_batch_job(kind, src, dst, ops);
+        self.enqueue_batch_with_follow_up(kind, src, dst, ops, Vec::new())
+    }
+
+    pub fn enqueue_batch_with_follow_up(
+        &self,
+        kind: &str,
+        src: &str,
+        dst: &str,
+        ops: Vec<JobOp>,
+        follow_up: Vec<JobOp>,
+    ) -> String {
+        let job = build_batch_job_with_follow_up(kind, src, dst, ops, follow_up);
         let id = job.task.id.clone();
         self.tasks.lock().unwrap().insert(id.clone(), job.task.clone());
         let (lock, cvar) = &*self.pending;
@@ -479,6 +500,22 @@ fn build_batch_job(kind: &str, src: &str, dst: &str, ops: Vec<JobOp>) -> Job {
     Job {
         task: build_task(kind, src, dst, total_files),
         ops,
+        follow_up: Vec::new(),
+    }
+}
+
+fn build_batch_job_with_follow_up(
+    kind: &str,
+    src: &str,
+    dst: &str,
+    ops: Vec<JobOp>,
+    follow_up: Vec<JobOp>,
+) -> Job {
+    let total_files = (ops.len() + follow_up.len()).max(1) as u64;
+    Job {
+        task: build_task(kind, src, dst, total_files),
+        ops,
+        follow_up,
     }
 }
 
