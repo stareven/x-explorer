@@ -49,6 +49,8 @@ export const tauriApi = {
     invoke<string>("enqueue_ios_delete", { deviceId, bundleId, remotePath }),
   iosDeleteBatch: (deviceId: string, bundleId: string, remotePaths: string[]) =>
     invoke<string>("enqueue_ios_delete_batch", { deviceId, bundleId, remotePaths }),
+  enqueueIosDeleteDir: (deviceId: string, bundleId: string, remotePath: string) =>
+    invoke<string>("enqueue_ios_delete_dir", { deviceId, bundleId, remotePath }),
   androidDelete: (deviceId: string, remotePath: string, pkg?: string) =>
     invoke<string>("enqueue_android_delete", { deviceId, remotePath, package: pkg ?? null }),
   androidDeleteBatch: (deviceId: string, remotePaths: string[], pkg?: string) =>
@@ -120,6 +122,16 @@ export function enqueueDeleteBatch(
   return device.platform === "ios"
     ? tauriApi.iosDeleteBatch(device.id, pkg!, remotePaths)
     : tauriApi.androidDeleteBatch(device.id, remotePaths, pkg);
+}
+
+export function enqueueDeleteDir(
+  device: Device,
+  pkg: string | undefined,
+  remotePath: string
+): Promise<string> {
+  return device.platform === "ios"
+    ? tauriApi.enqueueIosDeleteDir(device.id, pkg!, remotePath)
+    : /* Android keeps the existing recursive path for now */ tauriApi.androidDelete(device.id, remotePath, pkg);
 }
 
 // Hook: listen for device hotplug events and update the store's device list.
