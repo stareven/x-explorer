@@ -29,6 +29,16 @@ pub struct DownloadFile {
     pub local_path: String,
 }
 
+/// A single leaf produced by `collect_ios_delete_targets_recursive`. Either a
+/// file (will be `rm`'d) or an empty subdirectory (will be `rmdir`'d in the
+/// post-pass after its contents are gone). Paths are user-facing relative
+/// paths under `/Documents`, already sanitized (no `..`).
+#[derive(Clone, Debug)]
+pub struct IosDeleteTarget {
+    pub remote_path: String,
+    pub is_dir: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferTask {
     pub id: String,
