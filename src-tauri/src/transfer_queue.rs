@@ -116,7 +116,7 @@ impl TransferQueue {
     }
 
     fn run_job(&self, handle: &AppHandle, job: Job) {
-        let Job { mut task, ops } = job;
+        let Job { mut task, ops, follow_up } = job;
 
         // Trust check once per job (was previously called per file inside
         // `ios_download` / `ios_upload`, and again from
@@ -143,7 +143,7 @@ impl TransferQueue {
         }
         emit_progress(handle, &task);
 
-        let ops = match prepare_ops(handle, &task, ops) {
+        let (ops, follow_up) = match prepare_ops(handle, &task, ops) {
             Ok(ops) => ops,
             Err(e) => {
                 task.status = "error".to_string();
@@ -153,7 +153,7 @@ impl TransferQueue {
                 return;
             }
         };
-        update_task_total_files(&mut task, ops.len());
+        update_task_total_files(&mut task, ops.len() + follow_up.len());
         {
             let tasks = self.tasks.lock().unwrap();
             if is_cancelled(&tasks, &task.id) {
@@ -175,7 +175,7 @@ impl TransferQueue {
         // the previous serial `for op in ops` loop, which made a 50-file
         // folder download take 50× longer than necessary (each `afcclient get`
         // is independently spawned and I/O-bound).
-        run_ops_parallel(handle, self.tasks.clone(), task.id.clone(), ops);
+        run_ops_parallel(handle, self.tasks.clone(), task.id.clone(), ops, follow_up);
     }
 
     pub fn enqueue(&self, kind: &str, src: &str, dst: &str, op: JobOp) -> String {
@@ -231,20 +231,33 @@ impl TransferQueue {
 /// concurrency, which has been stable in production.
 const MAX_JOB_PARALLELISM: usize = 3;
 
-/// Runs every op in `ops` concurrently, with at most `MAX_JOB_PARALLELISM`
-/// ops in flight at any time. Each spawned thread acquires a slot from a
-/// shared semaphore (blocking on a `Condvar` while the cap is saturated),
-/// runs its op, updates the shared task map, and releases the slot via the
-/// `ParallelSlotGuard` RAII drop.
+/// Runs the main parallel wave (`ops`), then the follow-up wave (`follow_up`)
+/// using the same execution body. Used by `run_job` so a single job can
+/// express a two-phase execution (e.g. delete a directory: parallel leaf
+/// `rm` ops in the main wave, sequential `rmdir` ops in the follow-up wave
+/// in topological order produced by `collect_ios_delete_targets_recursive`).
 ///
-/// Cancellation: the spawn loop stops spawning new work the moment it observes
-/// a cancelled task, and each spawned thread rechecks cancellation right
-/// after acquiring its slot (catches a cancel that arrived while the thread
-/// was blocked in `cvar.wait`). Already-running ops always run to completion
-/// — there is no way to interrupt a subprocess — and any task-state update
-/// is skipped if the task is already in a terminal state (cancelled, done,
-/// or error).
+/// Note: the follow-up wave uses the same `MAX_JOB_PARALLELISM` cap as the
+/// main wave. This is safe because the walker pushes targets in strict
+/// deepest-first order — a parent directory's `rmdir` op never shares its
+/// parallel slot with one of its own children. Different subtrees interleave
+/// freely, which is fine since they're disjoint.
 fn run_ops_parallel(
+    handle: &AppHandle,
+    tasks: Arc<Mutex<HashMap<String, TransferTask>>>,
+    task_id: String,
+    ops: Vec<JobOp>,
+    follow_up: Vec<JobOp>,
+) {
+    run_ops_wave(handle, tasks.clone(), task_id.clone(), ops);
+    if !follow_up.is_empty() {
+        run_ops_wave(handle, tasks, task_id, follow_up);
+    }
+}
+
+/// Internal: runs `ops` concurrently with at most `MAX_JOB_PARALLELISM` ops
+/// in flight. Body is identical to the pre-refactor `run_ops_parallel`.
+fn run_ops_wave(
     handle: &AppHandle,
     tasks: Arc<Mutex<HashMap<String, TransferTask>>>,
     task_id: String,
@@ -349,6 +362,11 @@ fn run_op(op: JobOp) -> Result<(), String> {
             crate::android_client::android_upload(device_id, local_path, remote_path, package),
         JobOp::AndroidDelete { device_id, remote_path, package } =>
             crate::android_client::android_delete(device_id, remote_path, package),
+        // `IosDeleteDir` is a marker op: `prepare_ops` expands it into leaf
+        // `IosDelete` ops (main wave) and empty-dir `IosDelete` ops (follow-up
+        // wave) before they reach `run_op`. If we get here it means expansion
+        // was skipped, which is a programmer error.
+        JobOp::IosDeleteDir { .. } => unreachable!("IosDeleteDir must be expanded by prepare_ops before run_op"),
     }
 }
 
