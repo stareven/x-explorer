@@ -45,8 +45,6 @@ export const tauriApi = {
     invoke<void>("enqueue_ios_file_info", { deviceId, bundleId, paths }),
   listAndroidFiles: (deviceId: string, path: string, pkg?: string) =>
     invoke<FileEntry[]>("list_android_files", { deviceId, path, package: pkg ?? null }),
-  iosDelete: (deviceId: string, bundleId: string, remotePath: string) =>
-    invoke<string>("enqueue_ios_delete", { deviceId, bundleId, remotePath }),
   iosDeleteBatch: (deviceId: string, bundleId: string, remotePaths: string[]) =>
     invoke<string>("enqueue_ios_delete_batch", { deviceId, bundleId, remotePaths }),
   enqueueIosDeleteDir: (deviceId: string, bundleId: string, remotePath: string) =>

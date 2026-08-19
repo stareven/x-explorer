@@ -17,7 +17,6 @@ vi.mock("../../hooks/useTauri", () => ({
     enqueueAndroidDownload: vi.fn(),
     enqueueIosUpload: vi.fn(),
     enqueueAndroidUpload: vi.fn(),
-    iosDelete: vi.fn(),
     androidDelete: vi.fn(),
   },
   useTransferListener: vi.fn(),

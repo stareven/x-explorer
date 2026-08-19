@@ -20,7 +20,6 @@ vi.mock("../../hooks/useTauri", () => {
     enqueueIosDownloadBatch: vi.fn().mockResolvedValue(undefined),
     enqueueAndroidDownload: vi.fn().mockResolvedValue(undefined),
     enqueueAndroidDownloadBatch: vi.fn().mockResolvedValue(undefined),
-    iosDelete: vi.fn().mockResolvedValue(undefined),
     iosDeleteBatch: vi.fn().mockResolvedValue(undefined),
     enqueueIosDeleteDir: vi.fn().mockResolvedValue(undefined),
     androidDelete: vi.fn().mockResolvedValue(undefined),
@@ -280,7 +279,6 @@ describe("FileBrowser shortcuts", () => {
     expect(vi.mocked(open)).not.toHaveBeenCalled();
     expect(vi.mocked(tauriApi.enqueueIosDownload)).not.toHaveBeenCalled();
     expect(vi.mocked(tauriApi.enqueueIosDownloadBatch)).not.toHaveBeenCalled();
-    expect(vi.mocked(tauriApi.iosDelete)).not.toHaveBeenCalled();
     expect(vi.mocked(tauriApi.iosDeleteBatch)).not.toHaveBeenCalled();
   });
 
@@ -298,6 +296,5 @@ describe("FileBrowser shortcuts", () => {
         ["/Documents/one.txt"]
       );
     });
-    expect(vi.mocked(tauriApi.iosDelete)).not.toHaveBeenCalled();
   });
 });

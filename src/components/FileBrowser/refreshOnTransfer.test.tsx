@@ -33,7 +33,6 @@ vi.mock("../../hooks/useTauri", async () => {
     listIosFiles: vi.fn(),
     enqueueIosFileInfo: vi.fn(),
     listAndroidFiles: vi.fn(),
-    iosDelete: vi.fn(),
     iosDeleteBatch: vi.fn(),
     enqueueIosDeleteDir: vi.fn(),
     androidDelete: vi.fn(),
