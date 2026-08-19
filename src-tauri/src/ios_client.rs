@@ -520,6 +520,13 @@ fn collect_ios_delete_targets_recursive(
     fetch_listing: &mut dyn FnMut(&str) -> Result<Vec<(String, AfcFileInfo)>, String>,
     on_progress: &mut dyn FnMut(usize),
 ) -> Result<(), String> {
+    let make_user_child = |parent: &str, child_name: &str| -> String {
+        if parent.is_empty() {
+            child_name.to_string()
+        } else {
+            format!("{}/{}", parent, child_name)
+        }
+    };
     let entries = fetch_listing(remote)?;
     // Two passes: descend into every subdirectory first (so all of their
     // targets are queued before anything at this level), then push file
@@ -528,11 +535,7 @@ fn collect_ios_delete_targets_recursive(
     // ahead of a file that lives in a sibling subdirectory.
     for (name, info) in entries.iter().filter(|(_, info)| info.is_dir) {
         let child_remote = crate::file_ops::join_path(remote, name);
-        let child_user_remote = if user_remote.is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{}", user_remote, name)
-        };
+        let child_user_remote = make_user_child(user_remote, name);
         collect_ios_delete_targets_recursive(
             &child_remote,
             &child_user_remote,
@@ -542,17 +545,12 @@ fn collect_ios_delete_targets_recursive(
         )?;
     }
     for (name, info) in entries.iter().filter(|(_, info)| !info.is_dir) {
-        let child_user_remote = if user_remote.is_empty() {
-            name.clone()
-        } else {
-            format!("{}/{}", user_remote, name)
-        };
+        let child_user_remote = make_user_child(user_remote, name);
         out.push(IosDeleteTarget {
             remote_path: child_user_remote,
             is_dir: false,
         });
     }
-    on_progress(out.len());
     // Queue the directory's own removal *after* every entry inside it has
     // been pushed. For the top-level call this is the root directory the
     // caller asked us to delete; for recursive calls it's each subdirectory.
@@ -560,6 +558,7 @@ fn collect_ios_delete_targets_recursive(
         remote_path: user_remote.to_string(),
         is_dir: true,
     });
+    on_progress(out.len());
     Ok(())
 }
 
