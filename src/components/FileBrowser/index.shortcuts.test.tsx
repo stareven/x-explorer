@@ -22,6 +22,7 @@ vi.mock("../../hooks/useTauri", () => {
     enqueueAndroidDownloadBatch: vi.fn().mockResolvedValue(undefined),
     iosDelete: vi.fn().mockResolvedValue(undefined),
     iosDeleteBatch: vi.fn().mockResolvedValue(undefined),
+    enqueueIosDeleteDir: vi.fn().mockResolvedValue(undefined),
     androidDelete: vi.fn().mockResolvedValue(undefined),
     androidDeleteBatch: vi.fn().mockResolvedValue(undefined),
   };
@@ -38,6 +39,11 @@ vi.mock("../../hooks/useTauri", () => {
       device.platform === "ios"
         ? tauriApi.iosDeleteBatch(device.id, pkg, paths)
         : tauriApi.androidDeleteBatch(device.id, paths, pkg)
+    ),
+    enqueueDeleteDir: vi.fn((device, pkg, path) =>
+      device.platform === "ios"
+        ? tauriApi.enqueueIosDeleteDir(device.id, pkg, path)
+        : tauriApi.androidDelete(device.id, path, pkg)
     ),
     useIosFileInfoListener: vi.fn(),
     useTransferListener: vi.fn(),

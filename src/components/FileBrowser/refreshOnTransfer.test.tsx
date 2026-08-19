@@ -35,6 +35,7 @@ vi.mock("../../hooks/useTauri", async () => {
     listAndroidFiles: vi.fn(),
     iosDelete: vi.fn(),
     iosDeleteBatch: vi.fn(),
+    enqueueIosDeleteDir: vi.fn(),
     androidDelete: vi.fn(),
     androidDeleteBatch: vi.fn(),
     enqueueIosDownload: vi.fn(),
@@ -59,6 +60,11 @@ vi.mock("../../hooks/useTauri", async () => {
       device.platform === "ios"
         ? tauriApi.iosDeleteBatch(device.id, pkg!, paths)
         : tauriApi.androidDeleteBatch(device.id, paths, pkg)
+    ),
+    enqueueDeleteDir: vi.fn((device: { platform: string; id: string }, pkg: string | undefined, path: string) =>
+      device.platform === "ios"
+        ? tauriApi.enqueueIosDeleteDir(device.id, pkg!, path)
+        : tauriApi.androidDelete(device.id, path, pkg)
     ),
   };
 });
@@ -240,6 +246,34 @@ describe("FileBrowser refresh on transfer completion", () => {
 
     await waitFor(() => expect(vi.mocked(tauriApi.listIosFiles)).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(fileNames()).toEqual([]));
+  });
+
+  it("routes mixed file and directory selections to their respective delete APIs", async () => {
+    const mixedFiles: FileEntry[] = [
+      { name: "a.txt", path: "/a.txt", is_dir: false, size: 1, modified: 2 },
+      { name: "b.txt", path: "/b.txt", is_dir: false, size: 2, modified: 3 },
+      { name: "folder", path: "/folder", is_dir: true, size: 0, modified: 1 },
+    ];
+    mockSelection(["a.txt", "b.txt", "folder"]);
+    vi.mocked(tauriApi.listIosFiles).mockResolvedValue(mixedFiles);
+
+    render(<FileBrowser />);
+    await waitFor(() => expect(fileNames()).toEqual(["a.txt", "b.txt", "folder"]));
+
+    fireEvent.keyDown(window, { key: "Backspace", metaKey: true });
+
+    await waitFor(() => {
+      expect(vi.mocked(tauriApi.enqueueIosDeleteDir)).toHaveBeenCalledWith(
+        device.id,
+        app.bundle_id,
+        "/folder"
+      );
+      expect(vi.mocked(tauriApi.iosDeleteBatch)).toHaveBeenCalledWith(
+        device.id,
+        app.bundle_id,
+        ["/a.txt", "/b.txt"]
+      );
+    });
   });
 
   it("does not reload after a download task completes", async () => {
