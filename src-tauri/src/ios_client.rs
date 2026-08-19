@@ -1,4 +1,4 @@
-use crate::types::{AppInfo, Device, DownloadFile, FileEntry};
+use crate::types::{AppInfo, Device, DownloadFile, FileEntry, IosDeleteTarget};
 use std::fs;
 use std::path::Path;
 
@@ -494,6 +494,125 @@ fn collect_ios_download_files_recursive(
     }
     on_progress(out.len());
     Ok(())
+}
+
+/// Recursively walk an iOS document subtree and return every entry that needs
+/// to be removed, in **topological order** (deepest entries first, the parent
+/// directory's `rmdir` queued after all of its own descendants).
+///
+/// The output drives two distinct execution waves in `run_job`:
+/// - **main (parallel)**: every leaf file. These are independent and run
+///   concurrently via `run_ops_parallel` (up to `MAX_JOB_PARALLELISM=3`).
+/// - **follow-up (serial)**: every directory's `rmdir`, executed in the same
+///   order this function produces — deepest first — so a parent `rmdir` only
+///   fires after every child subdirectory has already been removed. This
+///   eliminates the "directory not empty" race that flat parallel execution
+///   would otherwise produce when a parent and its subdirectory both end up
+///   in flight at the same time.
+///
+/// Reuses the same `fetch_listing` / `on_progress` shape as
+/// `collect_ios_download_files_recursive` for testability and uniform progress
+/// reporting through `prepare_ops`.
+fn collect_ios_delete_targets_recursive(
+    remote: &str,
+    user_remote: &str,
+    out: &mut Vec<IosDeleteTarget>,
+    fetch_listing: &mut dyn FnMut(&str) -> Result<Vec<(String, AfcFileInfo)>, String>,
+    on_progress: &mut dyn FnMut(usize),
+) -> Result<(), String> {
+    let entries = fetch_listing(remote)?;
+    // Two passes: descend into every subdirectory first (so all of their
+    // targets are queued before anything at this level), then push file
+    // targets. This guarantees a strict deepest-first ordering across the
+    // whole subtree — a sibling file at the current level never appears
+    // ahead of a file that lives in a sibling subdirectory.
+    for (name, info) in entries.iter().filter(|(_, info)| info.is_dir) {
+        let child_remote = crate::file_ops::join_path(remote, name);
+        let child_user_remote = if user_remote.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", user_remote, name)
+        };
+        collect_ios_delete_targets_recursive(
+            &child_remote,
+            &child_user_remote,
+            out,
+            fetch_listing,
+            on_progress,
+        )?;
+    }
+    for (name, info) in entries.iter().filter(|(_, info)| !info.is_dir) {
+        let child_user_remote = if user_remote.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", user_remote, name)
+        };
+        out.push(IosDeleteTarget {
+            remote_path: child_user_remote,
+            is_dir: false,
+        });
+    }
+    on_progress(out.len());
+    // Queue the directory's own removal *after* every entry inside it has
+    // been pushed. For the top-level call this is the root directory the
+    // caller asked us to delete; for recursive calls it's each subdirectory.
+    out.push(IosDeleteTarget {
+        remote_path: user_remote.to_string(),
+        is_dir: true,
+    });
+    Ok(())
+}
+
+/// Walk the subtree rooted at `remote_path` and return every entry that needs
+/// to be removed, in topological order. Trust check is hoisted to
+/// `TransferQueue::run_job` (was previously redundant here — see commit
+/// "ios_delete: drop redundant check_ios_trusted"). Single top-level `info`
+/// call to determine file-vs-directory for the user-supplied root; once we're
+/// inside the recursion, `ls -l`'s first column (`drwx…` vs `-rw-…`) already
+/// encodes `is_dir`, so per-level `info` calls are dropped (same fix that
+/// `collect_ios_download_files` got).
+pub fn collect_ios_delete_targets(
+    device_id: &str,
+    bundle_id: &str,
+    remote_path: &str,
+    mut on_progress: impl FnMut(usize),
+) -> Result<Vec<IosDeleteTarget>, String> {
+    let safe_remote = crate::file_ops::sanitize_relative_path(remote_path)
+        .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
+    let remote = documents_path(&safe_remote);
+    let user_remote = crate::file_ops::normalize_path(&safe_remote);
+
+    let info_out = run_afcclient(device_id, bundle_id, &["info", &remote])?;
+    let info_text = String::from_utf8_lossy(&info_out.stdout).to_string();
+    let info = parse_afcclient_info(&info_text)
+        .ok_or_else(|| "无法识别 iOS 文件信息".to_string())?;
+
+    let mut targets = Vec::new();
+    if info.is_dir {
+        let mut fetch_listing = |remote_dir: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            let ls_out = run_afcclient(device_id, bundle_id, &["--", "ls", "-l", remote_dir])?;
+            let ls_text = String::from_utf8_lossy(&ls_out.stdout).to_string();
+            if !ls_out.status.success() || ls_text.contains("Error:") {
+                return Err(afc_error_message(ls_text.trim(), bundle_id));
+            }
+            Ok(parse_afcclient_ls_long(&ls_text))
+        };
+        collect_ios_delete_targets_recursive(
+            &remote,
+            &user_remote,
+            &mut targets,
+            &mut fetch_listing,
+            &mut on_progress,
+        )?;
+        on_progress(targets.len());
+    } else {
+        targets.push(IosDeleteTarget {
+            remote_path: user_remote,
+            is_dir: false,
+        });
+        on_progress(targets.len());
+    }
+    Ok(targets)
 }
 
 pub fn collect_ios_download_files(
@@ -1017,5 +1136,111 @@ mod tests {
             !err.contains("未连接") && !err.contains("信任"),
             "trust check should not run, got: {err}"
         );
+    }
+
+    #[test]
+    fn test_collect_ios_delete_targets_recursive_collects_files_from_flat_dir() {
+        let mut fetch = |_remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            Ok(vec![
+                ("a.txt".to_string(), file_info(1)),
+                ("b.txt".to_string(), file_info(2)),
+            ])
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<crate::types::IosDeleteTarget> = Vec::new();
+        collect_ios_delete_targets_recursive(
+            "/Documents/root",
+            "root",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap();
+        // Two leaf files first (topological: deepest first), then the now-empty
+        // root directory itself last so its `rmdir` happens after both files.
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].remote_path, "root/a.txt");
+        assert!(!out[0].is_dir);
+        assert_eq!(out[1].remote_path, "root/b.txt");
+        assert!(!out[1].is_dir);
+        assert_eq!(out[2].remote_path, "root");
+        assert!(out[2].is_dir);
+    }
+
+    #[test]
+    fn test_collect_ios_delete_targets_recursive_emits_dir_target_after_children() {
+        let mut fetch = |remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            match remote {
+                "/Documents/root" => Ok(vec![
+                    ("a.txt".to_string(), file_info(1)),
+                    ("sub".to_string(), dir_info()),
+                ]),
+                "/Documents/root/sub" => Ok(vec![
+                    ("b.txt".to_string(), file_info(2)),
+                ]),
+                _ => Err(format!("unexpected fetch: {remote}")),
+            }
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<crate::types::IosDeleteTarget> = Vec::new();
+        collect_ios_delete_targets_recursive(
+            "/Documents/root",
+            "root",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap();
+        // Topological deepest-first: file under sub, then sub, then file under
+        // root, then root. So the parent's `rmdir` always comes after its own
+        // `rmdir`'s children have been queued.
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].remote_path, "root/sub/b.txt");
+        assert!(!out[0].is_dir);
+        assert_eq!(out[1].remote_path, "root/sub");
+        assert!(out[1].is_dir);
+        assert_eq!(out[2].remote_path, "root/a.txt");
+        assert!(!out[2].is_dir);
+        assert_eq!(out[3].remote_path, "root");
+        assert!(out[3].is_dir);
+    }
+
+    #[test]
+    fn test_collect_ios_delete_targets_recursive_propagates_fetch_errors() {
+        let mut fetch = |_remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            Err("Permission denied (10)".to_string())
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<crate::types::IosDeleteTarget> = Vec::new();
+        let err = collect_ios_delete_targets_recursive(
+            "/Documents/root",
+            "root",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap_err();
+        assert!(err.contains("Permission denied"));
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn test_collect_ios_delete_targets_empty_dir_returns_only_self() {
+        let mut fetch = |_remote: &str| -> Result<Vec<(String, AfcFileInfo)>, String> {
+            Ok(vec![])
+        };
+        let (mut progress, _counts) = make_progress_recorder();
+        let mut out: Vec<crate::types::IosDeleteTarget> = Vec::new();
+        collect_ios_delete_targets_recursive(
+            "/Documents/empty",
+            "empty",
+            &mut out,
+            &mut fetch,
+            &mut progress,
+        )
+        .unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].remote_path, "empty");
+        assert!(out[0].is_dir);
     }
 }
