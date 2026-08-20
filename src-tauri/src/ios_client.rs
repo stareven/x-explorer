@@ -433,7 +433,7 @@ pub fn ios_download_dir(device_id: String, bundle_id: String, remote_path: Strin
     if let Some(parent) = Path::new(&local_path).parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let out = run_afcclient(&device_id, &bundle_id, &["get", "-rf", &remote, &local_path])?;
+    let out = run_afcclient(&device_id, &bundle_id, &["--", "get", "-rf", &remote, &local_path])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let msg = first_non_empty(stdout.trim(), stderr.trim());
@@ -456,7 +456,7 @@ pub fn ios_download(device_id: String, bundle_id: String, remote_path: String, l
     if let Some(parent) = Path::new(&local_path).parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let out = run_afcclient(&device_id, &bundle_id, &["get", &remote, &local_path])?;
+    let out = run_afcclient(&device_id, &bundle_id, &["--", "get", &remote, &local_path])?;
     if out.status.success() {
         Ok(())
     } else {
@@ -471,7 +471,7 @@ pub fn ios_upload(device_id: String, bundle_id: String, local_path: String, remo
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote = documents_path(&safe_remote);
-    let out = run_afcclient(&device_id, &bundle_id, &["put", &local_path, &remote])?;
+    let out = run_afcclient(&device_id, &bundle_id, &["--", "put", &local_path, &remote])?;
     if out.status.success() {
         Ok(())
     } else {
@@ -491,7 +491,7 @@ pub fn ios_upload_dir(device_id: String, bundle_id: String, local_path: String, 
     let safe_remote = crate::file_ops::sanitize_relative_path(&remote_path)
         .ok_or_else(|| "路径包含非法的上级目录引用".to_string())?;
     let remote = documents_path(&safe_remote);
-    let out = run_afcclient(&device_id, &bundle_id, &["put", "-rf", &local_path, &remote])?;
+    let out = run_afcclient(&device_id, &bundle_id, &["--", "put", "-rf", &local_path, &remote])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     let msg = first_non_empty(stdout.trim(), stderr.trim());
@@ -511,7 +511,7 @@ pub fn ios_upload_dir(device_id: String, bundle_id: String, local_path: String, 
 /// Failures are reported on stdout with exit code 0, so success is detected
 /// by the absence of "Error:" in stdout.
 fn afc_remove(device_id: &str, bundle_id: &str, remote: &str) -> Result<(), String> {
-    let out = run_afcclient(device_id, bundle_id, &["rm", "-rf", remote])?;
+    let out = run_afcclient(device_id, bundle_id, &["--", "rm", "-rf", remote])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     if !out.status.success() || stdout.contains("Error:") {
         Err(afc_error_message(stdout.trim(), bundle_id))
@@ -564,6 +564,7 @@ pub fn ios_delete_batch(device_id: String, bundle_id: String, remote_paths: Vec<
     args.extend(path_refs);
     let out = run_afcclient(&device_id, &bundle_id, &args)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() || stdout.contains("Error:") {
         Err(afc_error_message(stdout.trim(), &bundle_id))
     } else {

@@ -316,8 +316,9 @@ fn run_op(op: JobOp) -> Result<(), String> {
             crate::ios_client::ios_upload_dir(device_id, bundle_id, local_path, remote_path),
         JobOp::IosDelete { device_id, bundle_id, remote_path } =>
             crate::ios_client::ios_delete(device_id, bundle_id, remote_path),
-        JobOp::IosDeleteBatch { device_id, bundle_id, remote_paths } =>
-            crate::ios_client::ios_delete_batch(device_id, bundle_id, remote_paths),
+        JobOp::IosDeleteBatch { ref device_id, ref bundle_id, ref remote_paths } => {
+                    crate::ios_client::ios_delete_batch(device_id.clone(), bundle_id.clone(), remote_paths.clone())
+        }
         JobOp::AndroidDownload { device_id, remote_path, local_path, package } =>
             crate::android_client::android_download(device_id, remote_path, local_path, package),
         JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } =>
