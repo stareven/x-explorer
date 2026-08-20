@@ -33,6 +33,20 @@ const files: FileEntry[] = [
 const device = { id: "device-1", name: "iPhone", platform: "ios" as const, status: "connected" as const };
 const app = { name: "App", bundle_id: "com.example.app" };
 
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    left,
+    top,
+    width,
+    height,
+    right: left + width,
+    bottom: top + height,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   useStore.setState({
@@ -113,5 +127,26 @@ describe("FileBrowser search", () => {
     });
 
     await waitFor(() => expect((screen.getByPlaceholderText("搜索文件") as HTMLInputElement).value).toBe(""));
+  });
+});
+
+describe("FileBrowser marquee", () => {
+  it("marquee selects entries intersecting the dragged rectangle", async () => {
+    render(<FileBrowser />);
+    await waitFor(() => expect(screen.getByText("Alpha.txt")).toBeInTheDocument());
+
+    const entries = document.querySelectorAll<HTMLElement>("[data-file-entry]");
+    entries.forEach((el, i) => {
+      el.getBoundingClientRect = () => domRect(0, i * 30, 100, 20);
+    });
+
+    const container = screen.getByLabelText("文件浏览区域");
+    fireEvent.mouseDown(container, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.mouseMove(window, { clientX: 100, clientY: 55 });
+    expect(screen.getByTestId("marquee-overlay")).toBeInTheDocument();
+    fireEvent.mouseUp(window, { clientX: 100, clientY: 55 });
+
+    // Rows 0 (0-20) and 1 (30-50) intersect; rows 2 (60-80) and 3 (90-110) do not.
+    await waitFor(() => expect(screen.getByText("导出 (2)")).toBeInTheDocument());
   });
 });

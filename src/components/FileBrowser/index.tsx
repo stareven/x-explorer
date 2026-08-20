@@ -9,6 +9,7 @@ import { Toolbar } from "./Toolbar";
 import { FileList } from "./FileList";
 import { FileGrid } from "./FileGrid";
 import { useSelection } from "./useSelection";
+import { useMarqueeSelection } from "./useMarqueeSelection";
 import { useFileDrop } from "./useFileDrop";
 import { getFileBrowserShortcutAction } from "./shortcuts";
 import { FileBrowserContextMenu } from "./FileBrowserContextMenu";
@@ -67,7 +68,8 @@ export function FileBrowser() {
     [files, searchTerm],
   );
   const visibleFileNames = visibleFiles.map((f) => f.name);
-  const { selected, handleClick, selectOnly, selectAll, clearSelection } = useSelection(visibleFileNames);
+  const { selected, handleClick, selectOnly, selectAll, clearSelection, selectMany } = useSelection(visibleFileNames);
+  const { marquee, onMouseDown: onMarqueeMouseDown } = useMarqueeSelection(selectMany);
   const selectedVisibleFiles = visibleFiles.filter((file) => selected.has(file.name));
 
   // Captures (device, app, path) at the moment of an upload/delete enqueue,
@@ -484,6 +486,7 @@ export function FileBrowser() {
       <div
         className="flex-1 overflow-auto select-none"
         aria-label="文件浏览区域"
+        onMouseDown={onMarqueeMouseDown}
         onContextMenu={handleBackgroundContextMenu}
       >
         {viewMode === "list" ? (
@@ -517,6 +520,22 @@ export function FileBrowser() {
           initialValue={currentPath}
           onSubmit={(path) => navigate(path)}
           onClose={() => setShowGoToPath(false)}
+        />
+      )}
+      {marquee && (
+        <div
+          data-testid="marquee-overlay"
+          style={{
+            position: "fixed",
+            left: marquee.left,
+            top: marquee.top,
+            width: marquee.width,
+            height: marquee.height,
+            pointerEvents: "none",
+            zIndex: 50,
+            border: "1px solid rgb(59 130 246)",
+            background: "rgba(59 130 246, 0.15)",
+          }}
         />
       )}
     </div>
