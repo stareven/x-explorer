@@ -16,6 +16,7 @@ export function FileGrid({ files, selected, onNavigate, onSelect, onContextMenu 
         <div
           key={file.path}
           data-file-entry
+          data-file-name={file.name}
           onContextMenu={(e) => onContextMenu(file.name, e)}
           onClick={(e) => onSelect(file.name, e.metaKey, e.shiftKey)}
           onDoubleClick={() => file.is_dir && onNavigate(file.path)}
