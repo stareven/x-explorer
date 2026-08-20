@@ -564,7 +564,6 @@ pub fn ios_delete_batch(device_id: String, bundle_id: String, remote_paths: Vec<
     args.extend(path_refs);
     let out = run_afcclient(&device_id, &bundle_id, &args)?;
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() || stdout.contains("Error:") {
         Err(afc_error_message(stdout.trim(), &bundle_id))
     } else {
