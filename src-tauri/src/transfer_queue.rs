@@ -1,4 +1,4 @@
-use crate::types::{DownloadFile, TransferProgress, TransferTask};
+use crate::types::{TransferProgress, TransferTask};
 use serde::Deserialize;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
@@ -21,12 +21,11 @@ pub enum JobOp {
     IosDownload { device_id: String, bundle_id: String, remote_path: String, local_path: String },
     IosDownloadDir { device_id: String, bundle_id: String, remote_path: String, local_path: String },
     IosUpload { device_id: String, bundle_id: String, local_path: String, remote_path: String },
+    /// Single directory upload via `put -rf`. Single subprocess, no per-file expansion.
+    IosUploadDir { device_id: String, bundle_id: String, local_path: String, remote_path: String },
     IosDelete { device_id: String, bundle_id: String, remote_path: String },
-    /// Marker op for a directory deletion; expanded by `prepare_ops` into a
-    /// flat list of leaf-file `IosDelete` ops (run in parallel as the main
-    /// wave) plus a sequential follow-up of empty-directory `IosDelete` ops
-    /// (run after the main wave in topological order).
-    IosDeleteDir { device_id: String, bundle_id: String, remote_path: String },
+    /// Multi-path batch delete. All paths passed to single `afcclient rm -rf` call.
+    IosDeleteBatch { device_id: String, bundle_id: String, remote_paths: Vec<String> },
     AndroidDownload { device_id: String, remote_path: String, local_path: String, package: Option<String> },
     AndroidDownloadDir { device_id: String, remote_path: String, local_path: String, package: Option<String> },
     AndroidUpload { device_id: String, local_path: String, remote_path: String, package: Option<String> },
@@ -36,11 +35,6 @@ pub enum JobOp {
 struct Job {
     task: TransferTask,
     ops: Vec<JobOp>,
-    /// Ops to run *after* `ops` completes, in order. Used by `IosDeleteDir`
-    /// expansion to run directory `rmdir` ops after their leaf files have all
-    /// been removed (parallel main + serial follow-up). Empty for jobs that
-    /// don't need a post-pass (uploads, downloads, file-only deletes).
-    follow_up: Vec<JobOp>,
 }
 
 /// RAII guard that decrements `running_count` when dropped, ensuring the counter
@@ -116,13 +110,12 @@ impl TransferQueue {
     }
 
     fn run_job(&self, handle: &AppHandle, job: Job) {
-        let Job { mut task, ops, follow_up } = job;
+        let Job { mut task, ops } = job;
 
         // Trust check once per job (was previously called per file inside
-        // `ios_download` / `ios_upload`, and again from
-        // `collect_ios_download_files` — N × ~1.2s of pure idle subprocess
-        // startup for an N-file folder). The check only matters for iOS jobs;
-        // for Android jobs we skip it entirely.
+        // `ios_download` / `ios_upload`, and again per expansion step in the
+        // old `prepare_ops`). The check only matters for iOS jobs; for Android
+        // jobs we skip it entirely.
         if let Some(device_id) = ops.iter().find_map(ios_device_id) {
             if let Err(e) = crate::ios_client::check_ios_trusted(&device_id) {
                 task.status = "error".to_string();
@@ -143,7 +136,7 @@ impl TransferQueue {
         }
         emit_progress(handle, &task);
 
-        let (ops, follow_up) = match prepare_ops(handle, &task, ops) {
+        let (ops, _) = match prepare_ops(handle, &task, ops) {
             Ok(ops) => ops,
             Err(e) => {
                 task.status = "error".to_string();
@@ -153,7 +146,7 @@ impl TransferQueue {
                 return;
             }
         };
-        update_task_total_files(&mut task, ops.len() + follow_up.len());
+        update_task_total_files(&mut task, ops.len());
         {
             let tasks = self.tasks.lock().unwrap();
             if is_cancelled(&tasks, &task.id) {
@@ -171,11 +164,8 @@ impl TransferQueue {
         *self.running_count.lock().unwrap() += 1;
         let _guard = RunningCountGuard { count: &self.running_count };
 
-        // Run the ops in parallel, bounded by `MAX_JOB_PARALLELISM`. Replaces
-        // the previous serial `for op in ops` loop, which made a 50-file
-        // folder download take 50× longer than necessary (each `afcclient get`
-        // is independently spawned and I/O-bound).
-        run_ops_parallel(handle, self.tasks.clone(), task.id.clone(), ops, follow_up);
+        // Run the ops in parallel, bounded by `MAX_JOB_PARALLELISM`.
+        run_ops_parallel(handle, self.tasks.clone(), task.id.clone(), ops);
     }
 
     pub fn enqueue(&self, kind: &str, src: &str, dst: &str, op: JobOp) -> String {
@@ -183,18 +173,7 @@ impl TransferQueue {
     }
 
     pub fn enqueue_batch(&self, kind: &str, src: &str, dst: &str, ops: Vec<JobOp>) -> String {
-        self.enqueue_batch_with_follow_up(kind, src, dst, ops, Vec::new())
-    }
-
-    pub fn enqueue_batch_with_follow_up(
-        &self,
-        kind: &str,
-        src: &str,
-        dst: &str,
-        ops: Vec<JobOp>,
-        follow_up: Vec<JobOp>,
-    ) -> String {
-        let job = build_batch_job_with_follow_up(kind, src, dst, ops, follow_up);
+        let job = build_batch_job(kind, src, dst, ops);
         let id = job.task.id.clone();
         self.tasks.lock().unwrap().insert(id.clone(), job.task.clone());
         let (lock, cvar) = &*self.pending;
@@ -231,32 +210,17 @@ impl TransferQueue {
 /// concurrency, which has been stable in production.
 const MAX_JOB_PARALLELISM: usize = 3;
 
-/// Runs the main parallel wave (`ops`), then the follow-up wave (`follow_up`)
-/// using the same execution body. Used by `run_job` so a single job can
-/// express a two-phase execution (e.g. delete a directory: parallel leaf
-/// `rm` ops in the main wave, sequential `rmdir` ops in the follow-up wave
-/// in topological order produced by `collect_ios_delete_targets_recursive`).
-///
-/// Note: the follow-up wave uses the same `MAX_JOB_PARALLELISM` cap as the
-/// main wave. This is safe because the walker pushes targets in strict
-/// deepest-first order — a parent directory's `rmdir` op never shares its
-/// parallel slot with one of its own children. Different subtrees interleave
-/// freely, which is fine since they're disjoint.
 fn run_ops_parallel(
     handle: &AppHandle,
     tasks: Arc<Mutex<HashMap<String, TransferTask>>>,
     task_id: String,
     ops: Vec<JobOp>,
-    follow_up: Vec<JobOp>,
 ) {
-    run_ops_wave(handle, tasks.clone(), task_id.clone(), ops);
-    if !follow_up.is_empty() {
-        run_ops_wave(handle, tasks, task_id, follow_up);
-    }
+    run_ops_wave(handle, tasks, task_id, ops);
 }
 
 /// Internal: runs `ops` concurrently with at most `MAX_JOB_PARALLELISM` ops
-/// in flight. Body is identical to the pre-refactor `run_ops_parallel`.
+/// in flight.
 fn run_ops_wave(
     handle: &AppHandle,
     tasks: Arc<Mutex<HashMap<String, TransferTask>>>,
@@ -352,8 +316,12 @@ fn run_op(op: JobOp) -> Result<(), String> {
             crate::ios_client::ios_download_dir(device_id, bundle_id, remote_path, local_path),
         JobOp::IosUpload { device_id, bundle_id, local_path, remote_path } =>
             crate::ios_client::ios_upload(device_id, bundle_id, local_path, remote_path),
+        JobOp::IosUploadDir { device_id, bundle_id, local_path, remote_path } =>
+            crate::ios_client::ios_upload_dir(device_id, bundle_id, local_path, remote_path),
         JobOp::IosDelete { device_id, bundle_id, remote_path } =>
             crate::ios_client::ios_delete(device_id, bundle_id, remote_path),
+        JobOp::IosDeleteBatch { device_id, bundle_id, remote_paths } =>
+            crate::ios_client::ios_delete_batch(device_id, bundle_id, remote_paths),
         JobOp::AndroidDownload { device_id, remote_path, local_path, package } =>
             crate::android_client::android_download(device_id, remote_path, local_path, package),
         JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } =>
@@ -362,11 +330,6 @@ fn run_op(op: JobOp) -> Result<(), String> {
             crate::android_client::android_upload(device_id, local_path, remote_path, package),
         JobOp::AndroidDelete { device_id, remote_path, package } =>
             crate::android_client::android_delete(device_id, remote_path, package),
-        // `IosDeleteDir` is a marker op: `prepare_ops` expands it into leaf
-        // `IosDelete` ops (main wave) and empty-dir `IosDelete` ops (follow-up
-        // wave) before they reach `run_op`. If we get here it means expansion
-        // was skipped, which is a programmer error.
-        JobOp::IosDeleteDir { .. } => unreachable!("IosDeleteDir must be expanded by prepare_ops before run_op"),
     }
 }
 
@@ -414,78 +377,19 @@ fn build_download_ops(device_id: &str, bundle_id: Option<&str>, package: Option<
         .collect()
 }
 
+/// Prepares the final op list for execution. Directory operations
+/// (`IosDownloadDir`, `IosUploadDir`) pass through to `run_op` which calls
+/// `afcclient get -rf` / `put -rf` / `rm -rf` directly — single subprocess
+/// per operation instead of N subprocesses.
+///
+/// The second return value is always empty (follow_up mechanism removed since
+/// `rm -rf` handles recursive deletion natively).
 fn prepare_ops(
-    handle: &AppHandle,
-    task: &TransferTask,
+    _handle: &AppHandle,
+    _task: &TransferTask,
     ops: Vec<JobOp>,
 ) -> Result<(Vec<JobOp>, Vec<JobOp>), String> {
-    let mut main = Vec::new();
-    let mut follow_up = Vec::new();
-    for op in ops {
-        match op {
-            JobOp::IosDownloadDir { device_id, bundle_id, remote_path, local_path } => {
-                // Same progress-callback pattern as downloads — surfaces
-                // "preparing... N found" to the UI as the walker descends.
-                let mut on_progress = |discovered: usize| {
-                    let mut snapshot = task.clone();
-                    snapshot.total_files = discovered.max(1) as u64;
-                    emit_progress(handle, &snapshot);
-                };
-                let files = crate::ios_client::collect_ios_download_files(
-                    &device_id,
-                    &bundle_id,
-                    &remote_path,
-                    &local_path,
-                    &mut on_progress,
-                )?;
-                main.extend(build_ios_download_file_ops(&device_id, &bundle_id, &files));
-            }
-            JobOp::IosDeleteDir { device_id, bundle_id, remote_path } => {
-                // Walk the subtree once with `ls -l` (single subprocess per
-                // directory level; same trick that dropped `info` calls in the
-                // download path). Split the result:
-                //   - files → main (run in parallel as leaf `rm` ops)
-                //   - dirs  → follow_up (run after the main wave, in the
-                //     topological order produced by the walker — a parent's
-                //     `rmdir` always comes after its descendants' removal).
-                let mut on_progress = |discovered: usize| {
-                    let mut snapshot = task.clone();
-                    snapshot.total_files = discovered.max(1) as u64;
-                    emit_progress(handle, &snapshot);
-                };
-                let targets = crate::ios_client::collect_ios_delete_targets(
-                    &device_id,
-                    &bundle_id,
-                    &remote_path,
-                    &mut on_progress,
-                )?;
-                for target in targets {
-                    let op = JobOp::IosDelete {
-                        device_id: device_id.clone(),
-                        bundle_id: bundle_id.clone(),
-                        remote_path: target.remote_path,
-                    };
-                    if target.is_dir {
-                        follow_up.push(op);
-                    } else {
-                        main.push(op);
-                    }
-                }
-            }
-            JobOp::AndroidDownloadDir { device_id, remote_path, local_path, package } => {
-                let files = crate::android_client::collect_android_download_files(
-                    &device_id,
-                    &remote_path,
-                    &local_path,
-                    package.clone(),
-                    true,
-                )?;
-                main.extend(build_android_download_file_ops(&device_id, package.as_ref(), &files));
-            }
-            op => main.push(op),
-        }
-    }
-    Ok((main, follow_up))
+    Ok((ops, Vec::new()))
 }
 
 /// Extracts the device id from an iOS job op. Returns None for Android ops,
@@ -495,41 +399,11 @@ fn ios_device_id(op: &JobOp) -> Option<&str> {
         JobOp::IosDownload { device_id, .. }
         | JobOp::IosDownloadDir { device_id, .. }
         | JobOp::IosUpload { device_id, .. }
-        | JobOp::IosDelete { device_id, .. } => Some(device_id),
+        | JobOp::IosUploadDir { device_id, .. }
+        | JobOp::IosDelete { device_id, .. }
+        | JobOp::IosDeleteBatch { device_id, .. } => Some(device_id),
         _ => None,
     }
-}
-
-fn build_ios_download_file_ops(device_id: &str, bundle_id: &str, files: &[DownloadFile]) -> Vec<JobOp> {
-    files
-        .iter()
-        .map(|file| JobOp::IosDownload {
-            device_id: device_id.to_string(),
-            bundle_id: bundle_id.to_string(),
-            remote_path: file.remote_path.clone(),
-            local_path: file.local_path.clone(),
-        })
-        .collect()
-}
-
-fn build_android_download_file_ops(device_id: &str, package: Option<&String>, files: &[DownloadFile]) -> Vec<JobOp> {
-    files
-        .iter()
-        .map(|file| JobOp::AndroidDownload {
-            device_id: device_id.to_string(),
-            remote_path: file.remote_path.clone(),
-            local_path: file.local_path.clone(),
-            package: package.cloned(),
-        })
-        .collect()
-}
-
-fn build_ios_download_ops(device_id: &str, bundle_id: &str, files: &[FileTransferItem]) -> Vec<JobOp> {
-    build_download_ops(device_id, Some(bundle_id), None, files)
-}
-
-fn build_android_download_ops(device_id: &str, package: Option<&String>, files: &[FileTransferItem]) -> Vec<JobOp> {
-    build_download_ops(device_id, None, package, files)
 }
 
 fn build_task(kind: &str, src: &str, dst: &str, total_files: u64) -> TransferTask {
@@ -550,22 +424,6 @@ fn build_batch_job(kind: &str, src: &str, dst: &str, ops: Vec<JobOp>) -> Job {
     Job {
         task: build_task(kind, src, dst, total_files),
         ops,
-        follow_up: Vec::new(),
-    }
-}
-
-fn build_batch_job_with_follow_up(
-    kind: &str,
-    src: &str,
-    dst: &str,
-    ops: Vec<JobOp>,
-    follow_up: Vec<JobOp>,
-) -> Job {
-    let total_files = (ops.len() + follow_up.len()).max(1) as u64;
-    Job {
-        task: build_task(kind, src, dst, total_files),
-        ops,
-        follow_up,
     }
 }
 
@@ -648,7 +506,7 @@ pub fn enqueue_ios_download_batch(
     files: Vec<FileTransferItem>,
     state: tauri::State<Arc<TransferQueue>>,
 ) -> String {
-    let ops = build_ios_download_ops(&device_id, &bundle_id, &files);
+    let ops = build_download_ops(&device_id, Some(&bundle_id), None, &files);
     state.enqueue_batch("download", &format!("{} 个文件", files.len()), "", ops)
 }
 
@@ -669,6 +527,56 @@ pub fn enqueue_ios_upload_batch(
         })
         .collect();
     state.enqueue_batch("upload", &format!("{} 个文件", files.len()), "", ops)
+}
+
+#[tauri::command]
+pub fn enqueue_ios_delete_dir(
+    device_id: String,
+    bundle_id: String,
+    remote_path: String,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let op = JobOp::IosDelete {
+        device_id,
+        bundle_id,
+        remote_path: remote_path.clone(),
+    };
+    // total_files=1 → frontend shows Indeterminate progress
+    state.enqueue("delete", &remote_path, &remote_path, op)
+}
+
+#[tauri::command]
+pub fn enqueue_ios_delete_batch(
+    device_id: String,
+    bundle_id: String,
+    remote_paths: Vec<String>,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let op = JobOp::IosDeleteBatch {
+        device_id,
+        bundle_id,
+        remote_paths: remote_paths.clone(),
+    };
+    // Single op → total_files=1 → Indeterminate progress
+    state.enqueue_batch("delete", &format!("{} 个路径", remote_paths.len()), "", vec![op])
+}
+
+#[tauri::command]
+pub fn enqueue_ios_upload_dir(
+    device_id: String,
+    bundle_id: String,
+    local_path: String,
+    remote_path: String,
+    state: tauri::State<Arc<TransferQueue>>,
+) -> String {
+    let op = JobOp::IosUploadDir {
+        device_id,
+        bundle_id,
+        local_path: local_path.clone(),
+        remote_path: remote_path.clone(),
+    };
+    // Single op → total_files=1 → Indeterminate progress
+    state.enqueue("upload", &local_path, &remote_path, op)
 }
 
 #[tauri::command]
@@ -706,28 +614,13 @@ pub fn enqueue_android_upload(
 }
 
 #[tauri::command]
-pub fn enqueue_ios_delete_dir(
-    device_id: String,
-    bundle_id: String,
-    remote_path: String,
-    state: tauri::State<Arc<TransferQueue>>,
-) -> String {
-    let op = JobOp::IosDeleteDir {
-        device_id,
-        bundle_id,
-        remote_path: remote_path.clone(),
-    };
-    state.enqueue("delete", &remote_path, &remote_path, op)
-}
-
-#[tauri::command]
 pub fn enqueue_android_download_batch(
     device_id: String,
     files: Vec<FileTransferItem>,
     package: Option<String>,
     state: tauri::State<Arc<TransferQueue>>,
 ) -> String {
-    let ops = build_android_download_ops(&device_id, package.as_ref(), &files);
+    let ops = build_download_ops(&device_id, None, package.as_ref(), &files);
     state.enqueue_batch("download", &format!("{} 个文件", files.len()), "", ops)
 }
 
@@ -763,24 +656,6 @@ pub fn enqueue_android_delete(
         package,
     };
     state.enqueue("delete", &remote_path, &remote_path, op)
-}
-
-#[tauri::command]
-pub fn enqueue_ios_delete_batch(
-    device_id: String,
-    bundle_id: String,
-    remote_paths: Vec<String>,
-    state: tauri::State<Arc<TransferQueue>>,
-) -> String {
-    let ops = remote_paths
-        .iter()
-        .map(|remote_path| JobOp::IosDelete {
-            device_id: device_id.clone(),
-            bundle_id: bundle_id.clone(),
-            remote_path: remote_path.clone(),
-        })
-        .collect();
-    state.enqueue_batch("delete", &format!("{} 个文件", remote_paths.len()), "", ops)
 }
 
 #[tauri::command]
@@ -825,35 +700,12 @@ mod tests {
     #[test]
     fn test_task_total_files_can_be_updated_after_directory_expansion() {
         let mut task = build_task("download", "1 个文件", "", 1);
-        let expanded = vec![
-            DownloadFile { remote_path: "/Photos/a.jpg".to_string(), local_path: "/tmp/Photos/a.jpg".to_string() },
-            DownloadFile { remote_path: "/Photos/b.jpg".to_string(), local_path: "/tmp/Photos/b.jpg".to_string() },
-        ];
 
-        update_task_total_files(&mut task, expanded.len());
+        update_task_total_files(&mut task, 3);
 
-        assert_eq!(task.total_files, 2);
+        assert_eq!(task.total_files, 3);
         assert_eq!(task.completed_files, 0);
         assert_eq!(task.status, "pending");
-    }
-
-    #[test]
-    fn test_build_ios_download_ops_uses_expanded_leaf_files() {
-        let files = vec![FileTransferItem {
-            src: "/Photos/a.jpg".to_string(),
-            dst: "/tmp/Photos/a.jpg".to_string(),
-            is_dir: false,
-        }, FileTransferItem {
-            src: "/Photos/nested/b.jpg".to_string(),
-            dst: "/tmp/Photos/nested/b.jpg".to_string(),
-            is_dir: false,
-        }];
-        let ops = build_ios_download_ops("device-1", "bundle.id", &files);
-
-        assert_eq!(ops.len(), 2);
-        for op in ops {
-            assert!(matches!(op, JobOp::IosDownload { .. }));
-        }
     }
 
     #[test]
@@ -866,55 +718,6 @@ mod tests {
         assert_eq!(job.task.total_files, 3);
         assert_eq!(job.task.completed_files, 0);
         assert_eq!(job.ops.len(), 3);
-    }
-
-    #[test]
-    fn test_build_batch_job_with_follow_up_combines_main_and_follow_up_into_total() {
-        let ops = vec![
-            JobOp::IosDelete {
-                device_id: "dev".into(),
-                bundle_id: "b".into(),
-                remote_path: "root/a.txt".into(),
-            },
-            JobOp::IosDelete {
-                device_id: "dev".into(),
-                bundle_id: "b".into(),
-                remote_path: "root/b.txt".into(),
-            },
-        ];
-        let follow_up = vec![
-            JobOp::IosDelete {
-                device_id: "dev".into(),
-                bundle_id: "b".into(),
-                remote_path: "root".into(),
-            },
-        ];
-        let job = build_batch_job_with_follow_up("delete", "root", "root", ops, follow_up);
-
-        // total_files = main.len() + follow_up.len() (capped at >=1)
-        assert_eq!(job.task.total_files, 3);
-        assert_eq!(job.ops.len(), 2);
-        assert_eq!(job.follow_up.len(), 1);
-        // No completed files yet, status still pending — Job hasn't been enqueued.
-        assert_eq!(job.task.completed_files, 0);
-        assert_eq!(job.task.status, "pending");
-    }
-
-    #[test]
-    fn test_build_batch_job_with_follow_up_handles_empty_follow_up() {
-        // Single-op job (no follow-up) still works through the with_follow_up
-        // helper — total_files should equal ops.len().
-        let ops = vec![
-            JobOp::IosDelete {
-                device_id: "dev".into(),
-                bundle_id: "b".into(),
-                remote_path: "file.txt".into(),
-            },
-        ];
-        let job = build_batch_job_with_follow_up("delete", "file.txt", "file.txt", ops, vec![]);
-        assert_eq!(job.task.total_files, 1);
-        assert_eq!(job.ops.len(), 1);
-        assert!(job.follow_up.is_empty());
     }
 
     #[test]
