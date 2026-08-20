@@ -2,8 +2,17 @@ import { TransferTask } from "../../store";
 import { tauriApi } from "../../hooks/useTauri";
 
 export function TransferItem({ task }: { task: TransferTask }) {
+  // Indeterminate: single-subprocess op (rm -rf / get -rf / put -rf) that
+  // has started but not yet completed. total_files=1, completed_files=0,
+  // status=running. Once done, completed_files becomes 1 and the task
+  // transitions to "done" (disappears from TransferPanel).
+  const isIndeterminate =
+    task.status === "running" &&
+    task.completed_files === 0 &&
+    task.total_files === 1;
+
   const pct =
-    task.total_files > 0
+    task.total_files > 0 && !isIndeterminate
       ? Math.round((task.completed_files / task.total_files) * 100)
       : 0;
 
@@ -16,9 +25,13 @@ export function TransferItem({ task }: { task: TransferTask }) {
           {task.src.split("/").pop()}
         </span>
         <div className="flex items-center gap-2">
-          <span className="tabular-nums text-gray-400">
-            {task.completed_files}/{task.total_files}
-          </span>
+          {isIndeterminate ? (
+            <span className="text-gray-400">处理中…</span>
+          ) : (
+            <span className="tabular-nums text-gray-400">
+              {task.completed_files}/{task.total_files}
+            </span>
+          )}
           <span className={`text-xs ${task.status === "error" ? "text-red-400" : "text-gray-500"}`}>
             {task.status === "error" ? task.error ?? "error" : task.status}
           </span>
@@ -33,12 +46,19 @@ export function TransferItem({ task }: { task: TransferTask }) {
         </div>
       </div>
       <div className="h-1 bg-gray-700 rounded overflow-hidden">
-        <div
-          className={`h-full rounded transition-all ${
-            task.status === "error" ? "bg-red-500" : "bg-blue-500"
-          }`}
-          style={{ width: `${pct}%` }}
-        />
+        {isIndeterminate ? (
+          <div
+            className="h-full bg-blue-500 rounded animate-pulse"
+            style={{ width: "60%" }}
+          />
+        ) : (
+          <div
+            className={`h-full rounded transition-all ${
+              task.status === "error" ? "bg-red-500" : "bg-blue-500"
+            }`}
+            style={{ width: `${pct}%` }}
+          />
+        )}
       </div>
     </div>
   );

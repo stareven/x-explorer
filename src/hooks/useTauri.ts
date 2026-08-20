@@ -74,6 +74,13 @@ export const tauriApi = {
     }),
   enqueueIosUploadBatch: (deviceId: string, bundleId: string, files: TransferFileItem[]) =>
     invoke<string>("enqueue_ios_upload_batch", { deviceId, bundleId, files }),
+  enqueueIosUploadDir: (deviceId: string, bundleId: string, localPath: string, remotePath: string) =>
+    invoke<string>("enqueue_ios_upload_dir", {
+      deviceId,
+      bundleId,
+      localPath,
+      remotePath,
+    }),
   enqueueAndroidDownload: (deviceId: string, remotePath: string, localPath: string, pkg?: string) =>
     invoke<string>("enqueue_android_download", {
       deviceId,
