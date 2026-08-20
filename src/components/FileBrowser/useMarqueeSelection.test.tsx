@@ -114,4 +114,32 @@ describe("useMarqueeSelection", () => {
 
     expect(onBoxSelect).not.toHaveBeenCalled();
   });
+
+  it("clears selection when the rectangle intersects nothing", () => {
+    const onBoxSelect = vi.fn();
+    render(<Harness onBoxSelect={onBoxSelect} />);
+
+    const entries = document.querySelectorAll<HTMLElement>("[data-file-entry]");
+    entries[0].getBoundingClientRect = () => domRect(0, 0, 100, 20);
+    entries[1].getBoundingClientRect = () => domRect(0, 40, 100, 20);
+
+    const container = screen.getByTestId("container");
+    fireEvent.mouseDown(container, { button: 0, clientX: 500, clientY: 500 });
+    fireEvent.mouseMove(window, { clientX: 600, clientY: 600 });
+    fireEvent.mouseUp(window, { clientX: 600, clientY: 600 });
+
+    expect(onBoxSelect).toHaveBeenCalledWith([]);
+  });
+
+  it("ignores non-left-button mousedown", () => {
+    const onBoxSelect = vi.fn();
+    render(<Harness onBoxSelect={onBoxSelect} />);
+
+    const container = screen.getByTestId("container");
+    fireEvent.mouseDown(container, { button: 2, clientX: 0, clientY: 0 });
+    fireEvent.mouseMove(window, { clientX: 100, clientY: 100 });
+    fireEvent.mouseUp(window, { clientX: 100, clientY: 100 });
+
+    expect(onBoxSelect).not.toHaveBeenCalled();
+  });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 
 export interface MarqueeRect {
   left: number;
@@ -46,14 +46,7 @@ export function useMarqueeSelection(onBoxSelect: (names: string[]) => void) {
   const onBoxSelectRef = useRef(onBoxSelect);
   onBoxSelectRef.current = onBoxSelect;
 
-  function stopTracking() {
-    window.removeEventListener("mousemove", handleMouseMove);
-    window.removeEventListener("mouseup", handleMouseUp);
-    startRef.current = null;
-    draggingRef.current = false;
-  }
-
-  function handleMouseMove(e: MouseEvent) {
+  const handleMouseMove = useCallback((e: MouseEvent) => {
     const start = startRef.current;
     if (!start) return;
     const dx = e.clientX - start.x;
@@ -61,18 +54,21 @@ export function useMarqueeSelection(onBoxSelect: (names: string[]) => void) {
     if (!draggingRef.current && Math.max(Math.abs(dx), Math.abs(dy)) <= DRAG_THRESHOLD_PX) return;
     draggingRef.current = true;
     setMarquee(normalizeRect(start.x, start.y, e.clientX, e.clientY));
-  }
+  }, []);
 
-  function handleMouseUp(e: MouseEvent) {
+  const handleMouseUp = useCallback((e: MouseEvent) => {
     const start = startRef.current;
     if (draggingRef.current && start && containerRef.current) {
       onBoxSelectRef.current(
         collectBoxSelection(containerRef.current, normalizeRect(start.x, start.y, e.clientX, e.clientY)),
       );
     }
-    stopTracking();
+    window.removeEventListener("mousemove", handleMouseMove);
+    window.removeEventListener("mouseup", handleMouseUp);
+    startRef.current = null;
+    draggingRef.current = false;
     setMarquee(null);
-  }
+  }, [handleMouseMove]);
 
   function onMouseDown(e: ReactMouseEvent<HTMLElement>) {
     if (e.button !== 0) return;
@@ -83,14 +79,12 @@ export function useMarqueeSelection(onBoxSelect: (names: string[]) => void) {
     window.addEventListener("mouseup", handleMouseUp);
   }
 
-  // The handlers only read refs (never props/state), so the initial render's
-  // closures stay valid for the hook's lifetime — empty deps are intentional.
   useEffect(() => {
     return () => {
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, []);
+  }, [handleMouseMove, handleMouseUp]);
 
   return { marquee, onMouseDown };
 }
