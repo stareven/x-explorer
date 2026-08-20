@@ -92,6 +92,25 @@ describe("useMarqueeSelection", () => {
     expect(screen.queryByTestId("marquee-overlay")).not.toBeInTheDocument();
   });
 
+  it("collapses to a single entry when the drag returns to its origin", () => {
+    const onBoxSelect = vi.fn();
+    render(<Harness onBoxSelect={onBoxSelect} />);
+
+    const entries = document.querySelectorAll<HTMLElement>("[data-file-entry]");
+    entries[0].getBoundingClientRect = () => domRect(0, 0, 100, 20);
+    entries[1].getBoundingClientRect = () => domRect(0, 40, 100, 20);
+
+    const container = screen.getByTestId("container");
+    fireEvent.mouseDown(container, { button: 0, clientX: 50, clientY: 10 });
+    fireEvent.mouseMove(window, { clientX: 50, clientY: 100 });
+    fireEvent.mouseMove(window, { clientX: 50, clientY: 10 });
+    fireEvent.mouseUp(window, { clientX: 50, clientY: 10 });
+
+    // The rectangle is defined by start→current (not a lasso), so returning to
+    // the origin collapses it to just the entry under the start point.
+    expect(onBoxSelect).toHaveBeenCalledWith(["a.txt"]);
+  });
+
   it("does not trigger selection on a clean click", () => {
     const onBoxSelect = vi.fn();
     render(<Harness onBoxSelect={onBoxSelect} />);
