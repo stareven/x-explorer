@@ -81,6 +81,7 @@ export const tauriApi = {
       localPath,
       remotePath,
     }),
+  isLocalDirectory: (path: string) => invoke<boolean>("is_local_directory", { path }),
   enqueueAndroidDownload: (deviceId: string, remotePath: string, localPath: string, pkg?: string) =>
     invoke<string>("enqueue_android_download", {
       deviceId,
@@ -137,6 +138,17 @@ export function enqueueDeleteDir(
   return device.platform === "ios"
     ? tauriApi.enqueueIosDeleteDir(device.id, pkg!, remotePath)
     : /* Android keeps the existing recursive path for now */ tauriApi.androidDelete(device.id, remotePath, pkg);
+}
+
+export function enqueueUploadDir(
+  device: Device,
+  pkg: string | undefined,
+  localPath: string,
+  remotePath: string
+): Promise<string> {
+  return device.platform === "ios"
+    ? tauriApi.enqueueIosUploadDir(device.id, pkg!, localPath, remotePath)
+    : /* Android external storage: adb push is already recursive for a directory */ tauriApi.enqueueAndroidUpload(device.id, localPath, remotePath, pkg);
 }
 
 // Hook: listen for device hotplug events and update the store's device list.

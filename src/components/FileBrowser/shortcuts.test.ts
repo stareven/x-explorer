@@ -8,6 +8,7 @@ describe("file browser shortcuts", () => {
     expect(getFileBrowserShortcutAction({ key: "ArrowUp", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("up");
     expect(getFileBrowserShortcutAction({ key: "b", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("bookmark");
     expect(getFileBrowserShortcutAction({ key: "u", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("upload");
+    expect(getFileBrowserShortcutAction({ key: "u", metaKey: true, ctrlKey: false, altKey: false, shiftKey: true, target: null })).toBe("upload-dir");
     expect(getFileBrowserShortcutAction({ key: "s", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("download");
     expect(getFileBrowserShortcutAction({ key: "Backspace", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("delete");
     expect(getFileBrowserShortcutAction({ key: "a", metaKey: true, ctrlKey: false, altKey: false, target: null })).toBe("select-all");

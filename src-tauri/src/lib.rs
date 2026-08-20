@@ -61,6 +61,7 @@ pub fn run() {
             transfer_queue::enqueue_android_download_batch,
             transfer_queue::enqueue_android_upload_batch,
             transfer_queue::enqueue_android_delete_batch,
+            file_ops::is_local_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

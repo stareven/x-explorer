@@ -4,6 +4,7 @@ import { useStore } from "../../store";
 interface ToolbarProps {
   selectedCount: number;
   onImport: () => void;
+  onImportDir: () => void;
   onExport: () => void;
   onDelete: () => void;
   canGoBack: boolean;
@@ -19,7 +20,7 @@ interface ToolbarProps {
 }
 
 export const Toolbar = forwardRef<HTMLInputElement, ToolbarProps>(function Toolbar(
-  { selectedCount, onImport, onExport, onDelete, canGoBack, onBack, canGoForward, onForward, canGoUp, onUp, onRefresh, onBookmark, searchValue, onSearchChange },
+  { selectedCount, onImport, onImportDir, onExport, onDelete, canGoBack, onBack, canGoForward, onForward, canGoUp, onUp, onRefresh, onBookmark, searchValue, onSearchChange },
   searchInputRef,
 ) {
   const viewMode = useStore((s) => s.viewMode);
@@ -57,7 +58,13 @@ export const Toolbar = forwardRef<HTMLInputElement, ToolbarProps>(function Toolb
         onClick={onImport}
         className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
       >
-        导入
+        导入文件
+      </button>
+      <button
+        onClick={onImportDir}
+        className="px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+      >
+        导入文件夹
       </button>
       {selectedCount > 0 && (
         <>

@@ -73,6 +73,15 @@ pub fn sanitize_relative_path(child: &str) -> Option<String> {
     Some(segments.join("/"))
 }
 
+/// Returns whether the given local filesystem path is a directory. Used by the
+/// frontend to route items dropped from Finder (drag-and-drop) to either
+/// single-file upload or recursive directory upload — the drag event carries
+/// absolute paths but no is_dir flag.
+#[tauri::command]
+pub fn is_local_directory(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

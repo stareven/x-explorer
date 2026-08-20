@@ -186,11 +186,12 @@ describe("FileBrowser shortcuts", () => {
 
     fireEvent.contextMenu(screen.getByLabelText("文件浏览区域"), { clientX: 120, clientY: 160 });
 
-    expect(screen.getByRole("menuitem", { name: "导入" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "导入文件" })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "导入文件夹" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "导出" })).not.toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "删除" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "导入" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "导入文件" }));
 
     await waitFor(() => {
       expect(vi.mocked(tauriApi.enqueueIosUploadBatch)).toHaveBeenCalledWith(
@@ -212,7 +213,7 @@ describe("FileBrowser shortcuts", () => {
       expect(screen.getByRole("menuitem", { name: "导出" })).toBeInTheDocument();
     });
     expect(screen.getByRole("menuitem", { name: "删除" })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: "导入" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "导入文件" })).not.toBeInTheDocument();
   });
 
   it("opens the import context menu from blank space inside the file list", async () => {
@@ -221,7 +222,7 @@ describe("FileBrowser shortcuts", () => {
     fireEvent.contextMenu(screen.getByTestId("file-list"), { clientX: 120, clientY: 160 });
 
     await waitFor(() => {
-      expect(screen.getByRole("menuitem", { name: "导入" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "导入文件" })).toBeInTheDocument();
     });
   });
 

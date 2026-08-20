@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEven
 import { open } from "@tauri-apps/plugin-dialog";
 import { error } from "@tauri-apps/plugin-log";
 import { FileEntry, parentPath, useStore } from "../../store";
-import { tauriApi, enqueueDeleteBatch, enqueueDeleteDir, enqueueUploadBatch, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
+import { tauriApi, enqueueDeleteBatch, enqueueDeleteDir, enqueueUploadBatch, enqueueUploadDir, useIosFileInfoListener, useTransferListener } from "../../hooks/useTauri";
 import { buildSearchIndex, compareSearchMatches, normalizeSearchQuery, rankSearchIndex } from "../../utils/search";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { Toolbar } from "./Toolbar";
@@ -240,6 +240,9 @@ export function FileBrowser() {
         case "upload":
           void handleImport();
           break;
+        case "upload-dir":
+          void handleImportDir();
+          break;
         case "download":
           void handleExport();
           break;
@@ -272,6 +275,7 @@ export function FileBrowser() {
     handleDelete,
     handleExport,
     handleImport,
+    handleImportDir,
     handleToggleBookmark,
     navigate,
     selectAll,
@@ -330,6 +334,21 @@ export function FileBrowser() {
     }
   }
 
+  async function handleImportDir() {
+    const path = await open({ directory: true });
+    if (!path || typeof path !== "string" || !device) return;
+    const dirName = path.split("/").pop()!;
+    const remotePath = `${currentPath.replace(/\/$/, "")}/${dirName}`;
+    try {
+      // Single `afcclient put -rf` subprocess on the backend; progress is
+      // indeterminate, and the listing refreshes on the matching `done` event.
+      const taskId = await enqueueUploadDir(device, pkg, path, remotePath);
+      rememberPendingReload(taskId);
+    } catch (e) {
+      error(`Failed to enqueue folder upload: ${e}`);
+    }
+  }
+
   function handleBackgroundContextMenu(event: ReactMouseEvent<HTMLDivElement>) {
     const target = event.target as HTMLElement | null;
     if (target?.closest("[data-file-entry]")) return;
@@ -337,7 +356,10 @@ export function FileBrowser() {
     setContextMenu({
       x: event.clientX,
       y: event.clientY,
-      actions: [{ label: "导入", onAction: handleImport }],
+      actions: [
+        { label: "导入文件", onAction: handleImport },
+        { label: "导入文件夹", onAction: handleImportDir },
+      ],
     });
   }
 
@@ -445,6 +467,7 @@ export function FileBrowser() {
         ref={searchInputRef}
         selectedCount={selectedVisibleFiles.length}
         onImport={handleImport}
+        onImportDir={handleImportDir}
         onExport={handleExport}
         onDelete={handleDelete}
         canGoBack={canGoBack}

@@ -4,6 +4,7 @@ export type FileBrowserShortcutAction =
   | "up"
   | "bookmark"
   | "upload"
+  | "upload-dir"
   | "download"
   | "delete"
   | "select-all"
@@ -58,7 +59,7 @@ export function getFileBrowserShortcutAction(event: ShortcutEvent): FileBrowserS
     case "b":
       return "bookmark";
     case "u":
-      return "upload";
+      return event.shiftKey ? "upload-dir" : "upload";
     case "s":
       return "download";
     case "Backspace":
@@ -83,7 +84,8 @@ export const FILE_BROWSER_SHORTCUTS: FileBrowserShortcutInfo[] = [
   { action: "forward", keys: "⌘ ]", description: "前进" },
   { action: "up", keys: "⌘ ↑", description: "上级目录" },
   { action: "bookmark", keys: "⌘ B", description: "收藏 / 取消收藏" },
-  { action: "upload", keys: "⌘ U", description: "上传" },
+  { action: "upload", keys: "⌘ U", description: "上传文件" },
+  { action: "upload-dir", keys: "⌘ ⇧ U", description: "上传文件夹" },
   { action: "download", keys: "⌘ S", description: "下载" },
   { action: "delete", keys: "⌘ ⌫", description: "删除" },
   { action: "select-all", keys: "⌘ A", description: "全选" },
