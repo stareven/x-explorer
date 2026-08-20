@@ -20,4 +20,12 @@ describe("ShortcutsOverlay", () => {
       expect(screen.getByText(shortcut.description)).toBeTruthy();
     }
   });
+
+  it("does not block pointer events so clicks pass through", () => {
+    const { container } = render(<ShortcutsOverlay visible={true} />);
+
+    const overlay = container.firstElementChild;
+    expect(overlay).toBeTruthy();
+    expect(overlay!.className).toContain("pointer-events-none");
+  });
 });

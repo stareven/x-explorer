@@ -8,7 +8,7 @@ export function ShortcutsOverlay({ visible }: ShortcutsOverlayProps) {
   if (!visible) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
+    <div className="pointer-events-none fixed inset-0 z-[100] flex items-center justify-center bg-black/40">
       <div
         role="dialog"
         aria-label="快捷键说明"

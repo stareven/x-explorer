@@ -25,7 +25,15 @@ export function useCmdHoldOverlay(): boolean {
       }
 
       clearPendingTimer();
-      setVisible(false);
+      // Defer setVisible(false) to the next macrotask. We're a window-level
+      // keydown listener that runs *before* FileBrowser's window-level keydown
+      // listener. Calling setState synchronously here makes React 18 flush
+      // during the current event's listener pass, which triggers FileBrowser's
+      // useEffect to cleanup-and-re-register its handler right between our
+      // return and FileBrowser's handler firing — silently swallowing the
+      // user's Cmd+U/Cmd+B/etc. Pressing a non-Meta key while the overlay is
+      // up must still hide it, so we still schedule the hide, just not inline.
+      window.setTimeout(() => setVisible(false), 0);
     }
 
     function handleKeyUp(event: KeyboardEvent) {
@@ -39,15 +47,22 @@ export function useCmdHoldOverlay(): boolean {
       setVisible(false);
     }
 
+    function handleMouseDown() {
+      clearPendingTimer();
+      setVisible(false);
+    }
+
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     window.addEventListener("blur", handleBlur);
+    window.addEventListener("mousedown", handleMouseDown);
 
     return () => {
       clearPendingTimer();
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("mousedown", handleMouseDown);
     };
   }, []);
 
