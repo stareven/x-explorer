@@ -200,11 +200,13 @@ impl TransferQueue {
 
 /// Maximum number of operations a single job processes in parallel. Caps the
 /// total concurrent subprocess count at `MAX_JOB_PARALLELISM × max_concurrent
-/// worker threads`; with the default 3 workers and this set to 3, up to 9
-/// `afcclient` subprocesses can be in flight at once (e.g. 9 concurrent
-/// `afcclient get` calls). Matches `enqueue_ios_file_info`'s 8-way probe
-/// concurrency, which has been stable in production.
-const MAX_JOB_PARALLELISM: usize = 3;
+/// worker threads`; with the default 3 workers and this set to 8, up to 24
+/// `afcclient` subprocesses can be in flight at once. Each op is I/O-bound
+/// (subprocess spawn + USB/lockdownd round-trip), so overlapping more of them
+/// hides the ~1.2s per-call startup cost for many-small-file batches. Matches
+/// `enqueue_ios_file_info`'s `FILE_INFO_MAX_CONCURRENCY` of 8, which has been
+/// stable in production against the same USB/lockdownd connection.
+const MAX_JOB_PARALLELISM: usize = 8;
 
 fn run_ops_parallel(
     handle: &AppHandle,
