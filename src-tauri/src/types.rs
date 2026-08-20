@@ -23,12 +23,6 @@ pub struct FileEntry {
     pub modified: Option<u64>, // unix timestamp
 }
 
-#[derive(Debug, Clone)]
-pub struct DownloadFile {
-    pub remote_path: String,
-    pub local_path: String,
-}
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransferTask {

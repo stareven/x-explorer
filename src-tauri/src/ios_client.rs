@@ -106,15 +106,6 @@ pub(crate) fn check_ios_trusted(device_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Parse `afcclient ... ls <path>` stdout: one entry name per line.
-pub fn parse_afcclient_ls(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(|l| l.trim().to_string())
-        .filter(|l| !l.is_empty())
-        .collect()
-}
-
 /// Parsed subset of `afcclient ... info <path>` JSON output that FileEntry needs.
 pub struct AfcFileInfo {
     pub is_dir: bool,
@@ -656,19 +647,6 @@ mod tests {
     fn test_parse_file_sharing_enabled_ids_empty_output() {
         let ids = parse_file_sharing_enabled_ids("");
         assert_eq!(ids.len(), 0);
-    }
-
-    #[test]
-    fn test_parse_afcclient_ls_splits_lines() {
-        let output = "8es1421dg.be\nApplication Support.zip\n";
-        let names = parse_afcclient_ls(output);
-        assert_eq!(names, vec!["8es1421dg.be".to_string(), "Application Support.zip".to_string()]);
-    }
-
-    #[test]
-    fn test_parse_afcclient_ls_empty() {
-        let names = parse_afcclient_ls("");
-        assert_eq!(names.len(), 0);
     }
 
     #[test]

@@ -16,7 +16,7 @@
 //! approved on-device yet, and shelling out anyway just produces a confusing raw
 //! error.
 
-use crate::types::{AppInfo, Device, DownloadFile, FileEntry};
+use crate::types::{AppInfo, Device, FileEntry};
 use log::debug;
 use std::fs;
 use std::path::Path;
@@ -220,11 +220,6 @@ fn resolve_external_storage_root(adb: &Path, device_id: &str) -> Result<String, 
     Ok("/sdcard".to_string())
 }
 
-/// Whether a path falls under the app-container namespace and therefore needs run-as.
-pub fn requires_run_as(path: &str) -> bool {
-    path.starts_with("/data/data/") || path.starts_with("/data/user/")
-}
-
 /// Checks the device's current status via `adb devices` and returns an error
 /// if it isn't `connected`. Every command that shells further into the device
 /// (ls/cat/push/pull/rm) calls this first, so an unauthorized/offline device
@@ -334,42 +329,6 @@ pub fn list_android_files(
         stderr.trim()
     );
     Ok(parse_adb_ls(&text, &display_path))
-}
-
-pub fn collect_android_download_files(
-    device_id: &str,
-    remote_path: &str,
-    local_path: &str,
-    package: Option<String>,
-    is_dir: bool,
-) -> Result<Vec<DownloadFile>, String> {
-    if !is_dir {
-        return Ok(vec![DownloadFile {
-            remote_path: remote_path.to_string(),
-            local_path: local_path.to_string(),
-        }]);
-    }
-
-    let entries = list_android_files(device_id.to_string(), remote_path.to_string(), package.clone())?;
-    let mut files = Vec::new();
-    for entry in entries {
-        let child_local = Path::new(local_path).join(&entry.name);
-        if entry.is_dir {
-            files.extend(collect_android_download_files(
-                device_id,
-                &entry.path,
-                child_local.to_string_lossy().as_ref(),
-                package.clone(),
-                true,
-            )?);
-        } else {
-            files.push(DownloadFile {
-                remote_path: entry.path,
-                local_path: child_local.to_string_lossy().to_string(),
-            });
-        }
-    }
-    Ok(files)
 }
 
 fn android_download_file_full(device_id: &str, remote_path: &str, local_path: &str, package: Option<&str>) -> Result<(), String> {
@@ -699,14 +658,6 @@ Package [com.android.settings] (123abc):\n    application-label:'Settings'\n    
             .find_map(|line| line.split_once(" -> ").map(|(_, target)| target.trim().to_string()))
             .map(|target| crate::file_ops::normalize_path(&target));
         assert_eq!(target.as_deref(), Some("/storage/self/primary"));
-    }
-
-    #[test]
-    fn test_requires_run_as_for_app_data_paths() {
-        assert!(requires_run_as("/data/data/com.example.app/files"));
-        assert!(requires_run_as("/data/user/0/com.example.app/files"));
-        assert!(!requires_run_as("/sdcard/DCIM"));
-        assert!(!requires_run_as("/storage/emulated/0/Download"));
     }
 
     #[test]

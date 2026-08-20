@@ -196,10 +196,6 @@ impl TransferQueue {
     pub fn get_task(&self, task_id: &str) -> Option<TransferTask> {
         self.tasks.lock().unwrap().get(task_id).cloned()
     }
-
-    pub fn get_status(&self, task_id: &str) -> Option<String> {
-        self.tasks.lock().unwrap().get(task_id).map(|t| t.status.clone())
-    }
 }
 
 /// Maximum number of operations a single job processes in parallel. Caps the
