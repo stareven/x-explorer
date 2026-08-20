@@ -39,9 +39,14 @@ export function useSelection(items: string[]) {
     setSelected(new Set(items));
   }
 
+  function selectMany(names: string[]) {
+    setSelected(new Set(names));
+    setLastClicked(null);
+  }
+
   function clearSelection() {
     setSelected(new Set());
   }
 
-  return { selected, handleClick, selectOnly, selectAll, clearSelection };
+  return { selected, handleClick, selectOnly, selectAll, clearSelection, selectMany };
 }

@@ -37,4 +37,11 @@ describe("useSelection", () => {
     act(() => result.current.clearSelection());
     expect(result.current.selected.size).toBe(0);
   });
+
+  it("replaces selection with a set via selectMany()", () => {
+    const { result } = renderHook(() => useSelection(items));
+    act(() => result.current.handleClick("a.txt", false, false));
+    act(() => result.current.selectMany(["b.txt", "c.txt"]));
+    expect(result.current.selected).toEqual(new Set(["b.txt", "c.txt"]));
+  });
 });
