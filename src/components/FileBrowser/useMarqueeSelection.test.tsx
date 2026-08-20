@@ -1,5 +1,6 @@
-import { describe, it, expect } from "vitest";
-import { normalizeRect, rectsIntersect, collectBoxSelection, type MarqueeRect } from "./useMarqueeSelection";
+import { describe, it, expect, vi } from "vitest";
+import { normalizeRect, rectsIntersect, collectBoxSelection, useMarqueeSelection, type MarqueeRect } from "./useMarqueeSelection";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 function domRect(left: number, top: number, width: number, height: number): DOMRect {
   return {
@@ -58,5 +59,59 @@ describe("collectBoxSelection", () => {
     container.append(a, b);
 
     expect(collectBoxSelection(container, { left: 0, top: 0, width: 100, height: 25 })).toEqual(["a.txt"]);
+  });
+});
+
+function Harness({ onBoxSelect }: { onBoxSelect: (names: string[]) => void }) {
+  const { marquee, onMouseDown } = useMarqueeSelection(onBoxSelect);
+  return (
+    <div data-testid="container" onMouseDown={onMouseDown}>
+      <div data-file-entry data-file-name="a.txt" />
+      <div data-file-entry data-file-name="b.txt" />
+      {marquee && <div data-testid="marquee-overlay" />}
+    </div>
+  );
+}
+
+describe("useMarqueeSelection", () => {
+  it("selects entries intersecting the dragged rectangle", () => {
+    const onBoxSelect = vi.fn();
+    render(<Harness onBoxSelect={onBoxSelect} />);
+
+    const entries = document.querySelectorAll<HTMLElement>("[data-file-entry]");
+    entries[0].getBoundingClientRect = () => domRect(0, 0, 100, 20);
+    entries[1].getBoundingClientRect = () => domRect(0, 40, 100, 20);
+
+    const container = screen.getByTestId("container");
+    fireEvent.mouseDown(container, { button: 0, clientX: 0, clientY: 0 });
+    fireEvent.mouseMove(window, { clientX: 100, clientY: 25 });
+    expect(screen.getByTestId("marquee-overlay")).toBeInTheDocument();
+
+    fireEvent.mouseUp(window, { clientX: 100, clientY: 25 });
+    expect(onBoxSelect).toHaveBeenCalledWith(["a.txt"]);
+    expect(screen.queryByTestId("marquee-overlay")).not.toBeInTheDocument();
+  });
+
+  it("does not trigger selection on a clean click", () => {
+    const onBoxSelect = vi.fn();
+    render(<Harness onBoxSelect={onBoxSelect} />);
+
+    const container = screen.getByTestId("container");
+    fireEvent.mouseDown(container, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.mouseUp(window, { clientX: 10, clientY: 10 });
+
+    expect(onBoxSelect).not.toHaveBeenCalled();
+  });
+
+  it("ignores sub-threshold movement", () => {
+    const onBoxSelect = vi.fn();
+    render(<Harness onBoxSelect={onBoxSelect} />);
+
+    const container = screen.getByTestId("container");
+    fireEvent.mouseDown(container, { button: 0, clientX: 10, clientY: 10 });
+    fireEvent.mouseMove(window, { clientX: 12, clientY: 10 });
+    fireEvent.mouseUp(window, { clientX: 12, clientY: 10 });
+
+    expect(onBoxSelect).not.toHaveBeenCalled();
   });
 });
