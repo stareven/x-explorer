@@ -559,7 +559,7 @@ pub fn ios_delete_batch(device_id: String, bundle_id: String, remote_paths: Vec<
         })
         .collect();
     let safe_paths = safe_paths?;
-    let mut args: Vec<&str> = vec!["rm", "-rf"];
+    let mut args: Vec<&str> = vec!["--", "rm", "-rf"];
     let path_refs: Vec<&str> = safe_paths.iter().map(|s| s.as_str()).collect();
     args.extend(path_refs);
     let out = run_afcclient(&device_id, &bundle_id, &args)?;
