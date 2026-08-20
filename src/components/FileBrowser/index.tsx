@@ -482,7 +482,7 @@ export function FileBrowser() {
         onSearchChange={setFileSearch}
       />
       <div
-        className="flex-1 overflow-auto"
+        className="flex-1 overflow-auto select-none"
         aria-label="文件浏览区域"
         onContextMenu={handleBackgroundContextMenu}
       >
