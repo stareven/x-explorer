@@ -43,5 +43,9 @@ describe("useSelection", () => {
     act(() => result.current.handleClick("a.txt", false, false));
     act(() => result.current.selectMany(["b.txt", "c.txt"]));
     expect(result.current.selected).toEqual(new Set(["b.txt", "c.txt"]));
+
+    // lastClicked was cleared, so shift+click has no anchor and selects only d.txt
+    act(() => result.current.handleClick("d.txt", false, true));
+    expect(result.current.selected).toEqual(new Set(["d.txt"]));
   });
 });

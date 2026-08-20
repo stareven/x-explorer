@@ -142,6 +142,7 @@ function mockSelection(names: string[]) {
     selectOnly: vi.fn(),
     selectAll: vi.fn(),
     clearSelection: vi.fn(),
+    selectMany: vi.fn(),
   });
 }
 
@@ -167,6 +168,7 @@ describe("FileBrowser refresh on transfer completion", () => {
       selectOnly: vi.fn(),
       selectAll: vi.fn(),
       clearSelection: vi.fn(),
+      selectMany: vi.fn(),
     });
     Object.defineProperty(window, "localStorage", {
       value: { getItem: vi.fn(() => null), setItem: vi.fn(), removeItem: vi.fn(), clear: vi.fn() },

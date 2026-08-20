@@ -119,6 +119,7 @@ function mockSelection(names: string[]) {
     selectOnly: vi.fn(),
     selectAll: vi.fn(),
     clearSelection: vi.fn(),
+    selectMany: vi.fn(),
   });
 }
 
